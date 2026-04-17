@@ -1,11 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 
-
 const webserverEndPoint = import.meta.env.DEV
   ? 'http://localhost:80'
   : 'https://lab-document-query-g6djhxfnajdjgmbr.swedencentral-01.azurewebsites.net';
-
-
 
 const FILTER_FIELDS = [
   { key: 'tittel',            label: 'Rapport' },
@@ -31,6 +28,18 @@ const TAG_COLORS = {
   pub:   { bg: '#E1F5EE', color: '#085041' },
 }
 
+const card = {
+  background: '#fff',
+  borderRadius: 14,
+  boxShadow: '0 1px 3px rgba(0,0,0,0.07), 0 1px 2px rgba(0,0,0,0.04)',
+  border: '1px solid #E5E7EB',
+}
+
+const metaLabel = {
+  fontSize: 11, fontWeight: 600, color: '#9CA3AF',
+  textTransform: 'uppercase', letterSpacing: '.06em',
+}
+
 function Tag({ type, children }) {
   const c = TAG_COLORS[type] || TAG_COLORS.file
   return (
@@ -42,46 +51,67 @@ function Tag({ type, children }) {
   )
 }
 
-function ModeTabs({ mode, onChange }) {
+function Chevron({ open }) {
   return (
-    <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #eee' }}>
-      {['query', 'aggregate'].map(m => (
-        <button key={m} onClick={() => onChange(m)} style={{
-          padding: '8px 18px', fontSize: 14, border: 'none', background: 'none', cursor: 'pointer',
-          borderBottom: mode === m ? '2px solid #185FA5' : '2px solid transparent',
-          color: mode === m ? '#185FA5' : '#888', fontWeight: mode === m ? 500 : 400, marginBottom: -1,
-        }}>
-          {m === 'query' ? 'Document query' : 'Aggregate analysis'}
-        </button>
-      ))}
+    <span style={{
+      fontSize: 10, color: '#9CA3AF', display: 'inline-block',
+      transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .2s',
+    }}>▶</span>
+  )
+}
+
+function SectionToggle({ open, onToggle, label, badge }) {
+  return (
+    <div
+      onClick={onToggle}
+      onMouseDown={e => e.stopPropagation()}
+      style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}
+    >
+      <Chevron open={open} />
+      <span style={{ fontSize: 13, color: '#6B7280' }}>{label}</span>
+      {badge != null && badge > 0 && (
+        <span style={{
+          background: '#185FA5', color: '#fff', borderRadius: 99,
+          padding: '1px 7px', fontSize: 11, fontWeight: 600,
+        }}>{badge}</span>
+      )}
     </div>
   )
 }
 
 function MultiSelect({ label, options = [], selected, onChange }) {
   const [open, setOpen] = useState(false)
+  const ref = useRef(null)
   const count = selected.length
   const toggle = val => onChange(selected.includes(val) ? selected.filter(v => v !== val) : [...selected, val])
+
+  useEffect(() => {
+    if (!open) return
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
   return (
-    <div style={{ position: 'relative' }}>
-      <label style={{ fontSize: 12, color: '#666', display: 'block', marginBottom: 4 }}>{label}</label>
+    <div ref={ref} style={{ position: 'relative' }}>
+      <label style={{ fontSize: 11, color: '#6B7280', display: 'block', marginBottom: 4, fontWeight: 500 }}>{label}</label>
       <button onClick={() => setOpen(p => !p)} style={{
-        width: '100%', padding: '7px 10px', border: '1px solid #ddd', borderRadius: 8,
+        width: '100%', padding: '8px 10px', border: '1px solid #E5E7EB', borderRadius: 8,
         background: '#fff', textAlign: 'left', cursor: 'pointer', fontSize: 13,
-        color: count ? '#111' : '#999', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        color: count ? '#111' : '#9CA3AF', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
       }}>
         <span>{count ? `${count} valgt` : '— alle —'}</span>
-        <span style={{ fontSize: 10, color: '#aaa' }}>{open ? '▲' : '▼'}</span>
+        <span style={{ fontSize: 10, color: '#9CA3AF' }}>{open ? '▲' : '▼'}</span>
       </button>
       {open && (
         <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 100,
-          background: '#fff', border: '1px solid #ddd', borderRadius: 8,
-          boxShadow: '0 4px 12px rgba(0,0,0,0.08)', maxHeight: 220, overflowY: 'auto', marginTop: 2,
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 200,
+          background: '#fff', border: '1px solid #E5E7EB', borderRadius: 10,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.10)', maxHeight: 220, overflowY: 'auto', marginTop: 4,
         }}>
           {count > 0 && (
             <div onClick={() => { onChange([]); setOpen(false) }}
-              style={{ padding: '8px 12px', fontSize: 12, color: '#888', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}>
+              style={{ padding: '8px 12px', fontSize: 12, color: '#6B7280', cursor: 'pointer', borderBottom: '1px solid #F3F4F6' }}>
               Fjern alle valg
             </div>
           )}
@@ -89,7 +119,7 @@ function MultiSelect({ label, options = [], selected, onChange }) {
             <label key={opt} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
               cursor: 'pointer', fontSize: 13,
-              background: selected.includes(opt) ? '#f0f6ff' : 'transparent',
+              background: selected.includes(opt) ? '#EFF6FF' : 'transparent',
             }}>
               <input type="checkbox" checked={selected.includes(opt)} onChange={() => toggle(opt)}
                 style={{ accentColor: '#185FA5' }} />
@@ -116,7 +146,7 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options }) {
   }, [onApply])
 
   return (
-    <div ref={panelRef} style={{ border: '1px solid #eee', borderRadius: 12, padding: '1rem', marginBottom: 12, background: '#fafafa' }}>
+    <div ref={panelRef} style={{ border: '1px solid #E5E7EB', borderRadius: 12, padding: '1rem', marginTop: 10, marginBottom: 12, background: '#FAFAFA' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px 16px', marginBottom: 14 }}>
         {FILTER_FIELDS.map(f => (
           <MultiSelect key={f.key} label={f.label}
@@ -125,9 +155,15 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options }) {
             onChange={vals => onChangeDraft(f.key, vals)} />
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={onApply} style={{ fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>Apply</button>
-        <button onClick={onClear} style={{ fontSize: 13, padding: '6px 14px', borderRadius: 8, border: '1px solid #eee', background: 'none', color: '#888', cursor: 'pointer' }}>Clear all</button>
+      <div style={{ display: 'flex', gap: 8, borderTop: '1px solid #F3F4F6', paddingTop: 12 }}>
+        <button onClick={onApply} style={{
+          fontSize: 13, padding: '7px 16px', borderRadius: 8,
+          border: 'none', background: '#185FA5', color: '#fff', cursor: 'pointer', fontWeight: 500,
+        }}>Apply filters</button>
+        <button onClick={onClear} style={{
+          fontSize: 13, padding: '7px 14px', borderRadius: 8,
+          border: '1px solid #E5E7EB', background: 'none', color: '#6B7280', cursor: 'pointer',
+        }}>Clear all</button>
       </div>
     </div>
   )
@@ -137,18 +173,19 @@ function ActiveFilterTags({ filters, onRemoveValue }) {
   const entries = Object.entries(filters).filter(([, v]) => v && v.length > 0)
   if (!entries.length) return null
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10, marginBottom: 4 }}>
       {entries.flatMap(([key, values]) =>
         values.map(val => (
           <span key={`${key}:${val}`} style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: '3px 8px 3px 10px', borderRadius: 99,
-            fontSize: 12, fontWeight: 500, background: '#E6F1FB', color: '#0C447C',
+            fontSize: 12, fontWeight: 500, background: '#EFF6FF', color: '#1D4ED8',
+            border: '1px solid #BFDBFE',
           }}>
-            <span style={{ color: '#185FA5', marginRight: 2 }}>{key}:</span>
+            <span style={{ color: '#3B82F6', marginRight: 2 }}>{FILTER_FIELDS.find(f => f.key === key)?.label ?? key}:</span>
             <strong>{val}</strong>
             <button onClick={() => onRemoveValue(key, val)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#185FA5', fontSize: 15, lineHeight: 1, padding: '0 2px' }}>×</button>
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3B82F6', fontSize: 15, lineHeight: 1, padding: '0 2px' }}>×</button>
           </span>
         ))
       )}
@@ -158,12 +195,12 @@ function ActiveFilterTags({ filters, onRemoveValue }) {
 
 function ParamSlider({ label, min, max, step, value, onChange, format }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#666' }}>
-      <label>{label}</label>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#6B7280' }}>
+      <label style={{ minWidth: 100 }}>{label}</label>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(step < 1 ? parseFloat(e.target.value) : parseInt(e.target.value))}
-        style={{ width: 90 }} />
-      <span style={{ fontWeight: 500, minWidth: 28, color: '#111' }}>{format(value)}</span>
+        style={{ width: 100, accentColor: '#185FA5' }} />
+      <span style={{ fontWeight: 600, minWidth: 32, color: '#111827', fontSize: 13 }}>{format(value)}</span>
     </div>
   )
 }
@@ -171,7 +208,7 @@ function ParamSlider({ label, min, max, step, value, onChange, format }) {
 function SourceItem({ src }) {
   const [open, setOpen] = useState(false)
   return (
-    <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 10, marginTop: 10 }}>
+    <div style={{ borderTop: '1px solid #F3F4F6', paddingTop: 10, marginTop: 10 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 4 }}>
         <Tag type="file">{src.filename || 'unknown'}</Tag>
         {src.page_number != null && <Tag type="page">p. {src.page_number}</Tag>}
@@ -179,12 +216,12 @@ function SourceItem({ src }) {
         {src.segment && <Tag type="seg">{src.segment}</Tag>}
         {src.publisert_av && <Tag type="pub">{src.publisert_av}</Tag>}
       </div>
-      {src.tittel && <div style={{ fontSize: 12, color: '#888', fontStyle: 'italic', marginBottom: 4 }}>{src.tittel}</div>}
+      {src.tittel && <div style={{ fontSize: 12, color: '#9CA3AF', fontStyle: 'italic', marginBottom: 4 }}>{src.tittel}</div>}
       {src.excerpt && <>
-        <span onClick={() => setOpen(p => !p)} style={{ fontSize: 12, color: '#888', cursor: 'pointer', textDecoration: 'underline' }}>
-          {open ? 'hide excerpt' : 'show excerpt'}
+        <span onClick={() => setOpen(p => !p)} style={{ fontSize: 12, color: '#6B7280', cursor: 'pointer', textDecoration: 'underline' }}>
+          {open ? 'Skjul utdrag' : 'Vis utdrag'}
         </span>
-        {open && <div style={{ fontSize: 12, color: '#555', lineHeight: 1.6, marginTop: 6, padding: '8px 10px', background: '#f8f8f8', borderRadius: 6, whiteSpace: 'pre-wrap' }}>{src.excerpt}</div>}
+        {open && <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.6, marginTop: 6, padding: '8px 12px', background: '#F9FAFB', borderRadius: 8, whiteSpace: 'pre-wrap', border: '1px solid #F3F4F6' }}>{src.excerpt}</div>}
       </>}
     </div>
   )
@@ -194,23 +231,23 @@ function QueryResultCard({ data }) {
   const appliedFilters = data.filters || {}
   const sources = data.sources || []
   return (
-    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: '1.25rem', marginBottom: '1.25rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <div style={{ fontSize: 12, color: '#aaa' }}>Document query</div>
+    <div style={{ ...card, padding: '1.25rem', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={metaLabel}>Document query</span>
         {data.index_name && <Tag type="seg">{data.index_name}</Tag>}
       </div>
-      <div style={{ fontSize: 13, color: '#888', marginBottom: 6 }}>{data.question}</div>
+      <div style={{ fontSize: 15, fontWeight: 500, color: '#111827', marginBottom: 8 }}>{data.question}</div>
       {Object.keys(appliedFilters).length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 10 }}>
           {Object.entries(appliedFilters).map(([k, v]) => (
-            <Tag key={k} type="seg">{k}: {Array.isArray(v) ? v.join(', ') : v}</Tag>
+            <Tag key={k} type="seg">{FILTER_FIELDS.find(f => f.key === k)?.label ?? k}: {Array.isArray(v) ? v.join(', ') : v}</Tag>
           ))}
         </div>
       )}
-      <hr style={{ border: 'none', borderTop: '1px solid #f0f0f0', margin: '8px 0 12px' }} />
-      <div style={{ fontSize: 15, lineHeight: 1.7, whiteSpace: 'pre-wrap', marginBottom: '1rem' }}>{data.answer}</div>
+      <hr style={{ border: 'none', borderTop: '1px solid #F3F4F6', margin: '10px 0 14px' }} />
+      <div style={{ fontSize: 15, lineHeight: 1.75, whiteSpace: 'pre-wrap', marginBottom: '1rem', color: '#1F2937' }}>{data.answer}</div>
       {sources.length > 0 && <>
-        <div style={{ fontSize: 11, fontWeight: 500, color: '#999', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Sources</div>
+        <div style={{ ...metaLabel, marginBottom: 8 }}>Sources ({sources.length})</div>
         {sources.map((src, i) => <SourceItem key={i} src={src} />)}
       </>}
     </div>
@@ -220,27 +257,27 @@ function QueryResultCard({ data }) {
 function AggregateItem({ item, queryType }) {
   const isPersona = queryType === 'personas'
   return (
-    <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginTop: 12 }}>
-      <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 4, color: '#111' }}>{item.label}</div>
-      <div style={{ fontSize: 13, color: '#555', lineHeight: 1.6, marginBottom: 6 }}>{item.description}</div>
+    <div style={{ borderTop: '1px solid #F3F4F6', paddingTop: 14, marginTop: 14 }}>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6, color: '#111827' }}>{item.label}</div>
+      <div style={{ fontSize: 13, color: '#4B5563', lineHeight: 1.65, marginBottom: 8 }}>{item.description}</div>
       {isPersona && item.challenges?.length > 0 && (
-        <div style={{ marginBottom: 4 }}>
-          <div style={{ fontSize: 11, fontWeight: 500, color: '#999', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>Utfordringer</div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ ...metaLabel, marginBottom: 6 }}>Utfordringer</div>
           {item.challenges.map((c, i) => (
-            <div key={i} style={{ fontSize: 13, color: '#555', paddingLeft: 10, borderLeft: '2px solid #E6F1FB', marginBottom: 3 }}>{c}</div>
+            <div key={i} style={{ fontSize: 13, color: '#4B5563', paddingLeft: 12, borderLeft: '2px solid #BFDBFE', marginBottom: 4 }}>{c}</div>
           ))}
         </div>
       )}
       {isPersona && item.needs?.length > 0 && (
-        <div style={{ marginBottom: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 500, color: '#999', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 4 }}>Behov</div>
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ ...metaLabel, marginBottom: 6 }}>Behov</div>
           {item.needs.map((n, i) => (
-            <div key={i} style={{ fontSize: 13, color: '#555', paddingLeft: 10, borderLeft: '2px solid #EAF3DE', marginBottom: 3 }}>{n}</div>
+            <div key={i} style={{ fontSize: 13, color: '#4B5563', paddingLeft: 12, borderLeft: '2px solid #BBF7D0', marginBottom: 4 }}>{n}</div>
           ))}
         </div>
       )}
       {item.sources?.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 4 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
           {item.sources.map((s, i) => <Tag key={i} type="pub">{s}</Tag>)}
         </div>
       )}
@@ -259,18 +296,14 @@ function PromptsViewer({ queryType, defs }) {
     { key: 'aggregate_prompt', label: 'Aggregate — user' },
   ]
   return (
-    <div style={{ marginTop: 10, marginBottom: 14 }}>
-      <div onClick={() => setOpen(p => !p)}
-        style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}>
-        <span style={{ fontSize: 10, color: '#aaa', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .2s' }}>▶</span>
-        <span style={{ fontSize: 13, color: '#666' }}>Show prompts</span>
-      </div>
+    <div style={{ marginTop: 14 }}>
+      <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label="Show prompts" />
       {open && (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {fields.map(({ key, label }) => (
             <div key={key}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: '#999', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{label}</div>
-              <pre style={{ margin: 0, padding: '8px 12px', background: '#f6f6f6', borderRadius: 6, fontSize: 12, color: '#333', whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid #eee' }}>{cfg[key]}</pre>
+              <div style={{ ...metaLabel, marginBottom: 4 }}>{label}</div>
+              <pre style={{ margin: 0, padding: '8px 12px', background: '#F9FAFB', borderRadius: 8, fontSize: 12, color: '#374151', whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: '1px solid #E5E7EB' }}>{cfg[key]}</pre>
             </div>
           ))}
         </div>
@@ -282,14 +315,14 @@ function PromptsViewer({ queryType, defs }) {
 function ProgressBar({ index, total, tittel, nodeMessage }) {
   const pct = total > 0 ? Math.round((index / total) * 100) : 0
   return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 12, color: '#888', marginBottom: 6 }}>{nodeMessage || 'Kjører…'}</div>
-      <div style={{ height: 4, background: '#f0f0f0', borderRadius: 99, overflow: 'hidden', marginBottom: 6 }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: '#185FA5', borderRadius: 99, transition: 'width .3s' }} />
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 13, color: '#6B7280', marginBottom: 8 }}>{nodeMessage || 'Kjører…'}</div>
+      <div style={{ height: 6, background: '#F3F4F6', borderRadius: 99, overflow: 'hidden', marginBottom: 8 }}>
+        <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg, #185FA5, #3B82F6)', borderRadius: 99, transition: 'width .3s' }} />
       </div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#aaa' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#9CA3AF' }}>
         <span style={{ maxWidth: 480, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tittel || ''}</span>
-        <span>{index}/{total}</span>
+        <span style={{ fontWeight: 500 }}>{pct}% · {index}/{total}</span>
       </div>
     </div>
   )
@@ -301,26 +334,28 @@ function AggregateResultCard({ data }) {
   const items = data[outputKeys[data.query_type]] || []
   const isLoading = data._loading
   return (
-    <div style={{ border: '1px solid #eee', borderRadius: 12, padding: '1.25rem', marginBottom: '1.25rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-        <div style={{ fontSize: 12, color: '#aaa' }}>Aggregate analysis</div>
+    <div style={{ ...card, padding: '1.25rem', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+        <span style={metaLabel}>Aggregate analysis</span>
         {data.index_name && <Tag type="seg">{data.index_name}</Tag>}
         <Tag type="seg">{qt.label}</Tag>
-        {isLoading && <span style={{ fontSize: 12, color: '#185FA5' }}>kjører…</span>}
+        {isLoading && <span style={{ fontSize: 12, color: '#185FA5', fontWeight: 500 }}>kjører…</span>}
       </div>
-      <div style={{ fontSize: 13, color: '#888', marginBottom: 10 }}>{data.question}</div>
+      <div style={{ fontSize: 15, fontWeight: 500, color: '#111827', marginBottom: 10 }}>{data.question}</div>
       {isLoading && (
         <ProgressBar index={data._docIndex ?? 0} total={data._docTotal ?? 0}
           tittel={data._docTittel} nodeMessage={data._nodeMessage} />
       )}
       {!isLoading && (
-        <div style={{ fontSize: 12, color: '#aaa', marginBottom: 12 }}>
-          {data.documents_visited} dokumenter besøkt · {data.documents_with_findings} med funn · {items.length} {qt.label.toLowerCase()}
+        <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 14, display: 'flex', gap: 16 }}>
+          <span>{data.documents_visited} dokumenter besøkt</span>
+          <span>{data.documents_with_findings} med funn</span>
+          <span>{items.length} {qt.label.toLowerCase()}</span>
         </div>
       )}
-      {!isLoading && <hr style={{ border: 'none', borderTop: '1px solid #f0f0f0', margin: '0 0 4px' }} />}
+      {!isLoading && <hr style={{ border: 'none', borderTop: '1px solid #F3F4F6', margin: '0 0 4px' }} />}
       {!isLoading && (items.length === 0
-        ? <div style={{ fontSize: 14, color: '#888', padding: '1rem 0' }}>Ingen funn ble aggregert.</div>
+        ? <div style={{ fontSize: 14, color: '#9CA3AF', padding: '1rem 0' }}>Ingen funn ble aggregert.</div>
         : items.map((item, i) => <AggregateItem key={i} item={item} queryType={data.query_type} />)
       )}
     </div>
@@ -329,36 +364,33 @@ function AggregateResultCard({ data }) {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [server, setServer]           = useState(webserverEndPoint)
-  const [mode, setMode]               = useState('query')
-  const [question, setQuestion]       = useState('')
-  const [loading, setLoading]         = useState(false)
-  const [status, setStatus]           = useState('')
-  const [statusErr, setStatusErr]     = useState(false)
-  const [results, setResults]         = useState([])
-  const [indexes, setIndexes]         = useState([])
+  const [server, setServer]             = useState(webserverEndPoint)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [mode, setMode]                 = useState('query')
+  const [question, setQuestion]         = useState('')
+  const [loading, setLoading]           = useState(false)
+  const [status, setStatus]             = useState('')
+  const [statusErr, setStatusErr]       = useState(false)
+  const [results, setResults]           = useState([])
+  const [indexes, setIndexes]           = useState([])
   const [selectedIndex, setSelectedIndex] = useState('')
-  const selectedIndexRef              = useRef('')
-  const [options, setOptions]         = useState({})
-  const [optionsErr, setOptionsErr]   = useState('')
+  const selectedIndexRef                = useRef('')
+  const [options, setOptions]           = useState({})
+  const [optionsErr, setOptionsErr]     = useState('')
   const [queryTypeDefs, setQueryTypeDefs] = useState({})
-  const [filtersOpen, setFiltersOpen] = useState(false)
-  const [topK, setTopK]               = useState(5)
-  const [cutoff, setCutoff]           = useState(0.30)
-  const [queryType, setQueryType]     = useState('problems')
-  const [nPersonas, setNPersonas]     = useState(3)
+  const [filtersOpen, setFiltersOpen]   = useState(false)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [topK, setTopK]                 = useState(5)
+  const [cutoff, setCutoff]             = useState(0.30)
+  const [queryType, setQueryType]       = useState('problems')
+  const [nPersonas, setNPersonas]       = useState(3)
   const [chunksPerDoc, setChunksPerDoc] = useState(4)
 
-  // ── Filter state — use refs so async runQuery always sees latest values ──
-  // draft: what's shown in the open panel
-  // activeFilters: what was last Applied
-  // Both have a ref mirror updated synchronously
-  const [draft, setDraft]                 = useState({})
-  const draftRef                          = useRef({})
-  const [activeFilters, setActiveFilters] = useState({})
-  const activeFiltersRef                  = useRef({})
+  const [draft, setDraft]                   = useState({})
+  const draftRef                            = useRef({})
+  const [activeFilters, setActiveFilters]   = useState({})
+  const activeFiltersRef                    = useRef({})
 
-  // When server or selected index changes, reload filter options
   useEffect(() => {
     const base = server.replace(/\/$/, '')
     const idx  = selectedIndexRef.current
@@ -369,7 +401,6 @@ export default function App() {
       .catch(() => setOptionsErr('Could not load filter options from server'))
   }, [server, selectedIndex])
 
-  // On server change, reload index list + query types
   useEffect(() => {
     const base = server.replace(/\/$/, '')
     fetch(`${base}/indexes`)
@@ -388,7 +419,6 @@ export default function App() {
       .catch(() => {})
   }, [server])
 
-  // Update a single field in draft — keeps ref in sync
   const handleDraftChange = (field, vals) => {
     const next = { ...draftRef.current, [field]: vals }
     draftRef.current = next
@@ -401,7 +431,6 @@ export default function App() {
       const vals = draftRef.current[key] || []
       if (vals.length) applied[key] = vals
     })
-    console.log('[applyFilters] applying:', applied)
     activeFiltersRef.current = applied
     setActiveFilters(applied)
     setFiltersOpen(false)
@@ -434,13 +463,10 @@ export default function App() {
     setStatus(mode === 'aggregate' ? 'Analyserer dokumenter — dette tar 1-3 min…' : 'Querying…')
     setStatusErr(false)
 
-    // Read filters from ref — guaranteed latest regardless of render cycle
     const filters = activeFiltersRef.current
     const filtersToSend = Object.keys(filters).length
       ? Object.fromEntries(Object.entries(filters).map(([k, vals]) => [k, vals.join(';')]))
       : undefined
-
-    console.log('[runQuery] filters:', filtersToSend)
 
     try {
       let res
@@ -527,104 +553,167 @@ export default function App() {
     : QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv inn spørsmål…'
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto', padding: '2rem 1rem', fontFamily: 'sans-serif' }}>
-      <h1 style={{ fontSize: 20, fontWeight: 500, marginBottom: '1.5rem' }}>Lab document query</h1>
+    <div style={{ minHeight: '100vh', background: '#F4F5F7', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+      <div style={{ maxWidth: 820, margin: '0 auto', padding: '2rem 1.25rem' }}>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, alignItems: 'center' }}>
-        <label style={{ fontSize: 13, color: '#666', whiteSpace: 'nowrap' }}>Server</label>
-        <input value={server} onChange={e => setServer(e.target.value)}
-          style={{ flex: 1, padding: '7px 12px', border: '1px solid #ddd', borderRadius: 8, fontSize: 13 }} />
-      </div>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+          <div>
+            <h1 style={{ fontSize: 22, fontWeight: 600, color: '#111827', margin: 0 }}>Lab Document Query</h1>
+            <p style={{ fontSize: 13, color: '#9CA3AF', margin: '3px 0 0' }}>Søk og analyser dokumenter med AI</p>
+          </div>
+          <button
+            onClick={() => setSettingsOpen(p => !p)}
+            title="Server settings"
+            style={{
+              padding: '8px 10px', borderRadius: 8, border: '1px solid #E5E7EB',
+              background: settingsOpen ? '#EFF6FF' : '#fff', cursor: 'pointer', fontSize: 17,
+              color: settingsOpen ? '#185FA5' : '#6B7280', lineHeight: 1,
+            }}
+          >⚙</button>
+        </div>
 
-      {indexes.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-          <label style={{ fontSize: 13, color: '#666', whiteSpace: 'nowrap' }}>Index</label>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {indexes.map(name => (
-              <button key={name} onClick={() => { selectedIndexRef.current = name; setSelectedIndex(name) }} style={{
-                padding: '5px 14px', borderRadius: 99, fontSize: 13, cursor: 'pointer',
-                border: selectedIndex === name ? '1.5px solid #185FA5' : '1px solid #ddd',
-                background: selectedIndex === name ? '#E6F1FB' : '#fff',
-                color: selectedIndex === name ? '#0C447C' : '#555',
-                fontWeight: selectedIndex === name ? 500 : 400,
-              }}>{name}</button>
+        {/* Server settings */}
+        {settingsOpen && (
+          <div style={{ ...card, padding: '1rem', marginBottom: 16 }}>
+            <div style={{ ...metaLabel, marginBottom: 8 }}>Server URL</div>
+            <input value={server} onChange={e => setServer(e.target.value)}
+              style={{ width: '100%', padding: '8px 12px', border: '1px solid #E5E7EB', borderRadius: 8, fontSize: 13, boxSizing: 'border-box', fontFamily: 'monospace' }} />
+          </div>
+        )}
+
+        {/* Index selector */}
+        {indexes.length > 0 && (
+          <div style={{ ...card, padding: '0.875rem 1rem', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <span style={metaLabel}>Index</span>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {indexes.map(name => (
+                <button key={name} onClick={() => { selectedIndexRef.current = name; setSelectedIndex(name) }} style={{
+                  padding: '5px 14px', borderRadius: 99, fontSize: 13, cursor: 'pointer',
+                  border: selectedIndex === name ? '1.5px solid #185FA5' : '1px solid #E5E7EB',
+                  background: selectedIndex === name ? '#EFF6FF' : '#F9FAFB',
+                  color: selectedIndex === name ? '#185FA5' : '#4B5563',
+                  fontWeight: selectedIndex === name ? 600 : 400,
+                }}>{name}</button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Main query card */}
+        <div style={{ ...card, padding: '1.25rem', marginBottom: 20 }}>
+
+          {/* Mode tabs — pill segmented control */}
+          <div style={{ display: 'inline-flex', background: '#F3F4F6', borderRadius: 10, padding: 3, marginBottom: 20 }}>
+            {[['query', 'Document query'], ['aggregate', 'Aggregate analysis']].map(([m, label]) => (
+              <button key={m} onClick={() => { setMode(m); setStatus('') }} style={{
+                padding: '7px 18px', fontSize: 13, border: 'none', cursor: 'pointer', borderRadius: 8,
+                background: mode === m ? '#fff' : 'transparent',
+                boxShadow: mode === m ? '0 1px 3px rgba(0,0,0,0.10)' : 'none',
+                color: mode === m ? '#111827' : '#6B7280',
+                fontWeight: mode === m ? 600 : 400,
+                fontFamily: 'inherit',
+              }}>{label}</button>
             ))}
           </div>
-        </div>
-      )}
 
-      <ModeTabs mode={mode} onChange={m => { setMode(m); setStatus('') }} />
-
-      {mode === 'query' && (
-        <div style={{ display: 'flex', gap: 20, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-          <ParamSlider label="top_k" min={1} max={40} step={1} value={topK} onChange={setTopK} format={v => v} />
-          <ParamSlider label="cutoff" min={0} max={1} step={0.05} value={cutoff} onChange={setCutoff} format={v => v.toFixed(2)} />
-        </div>
-      )}
-
-      {mode === 'aggregate' && (
-        <>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 14, alignItems: 'flex-start' }}>
-            <div>
-              <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>Query type</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {/* Aggregate query type cards */}
+          {mode === 'aggregate' && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ ...metaLabel, marginBottom: 10 }}>Analysis type</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {QUERY_TYPES.map(qt => (
                   <button key={qt.key} onClick={() => setQueryType(qt.key)} style={{
-                    padding: '6px 14px', borderRadius: 99, fontSize: 13, cursor: 'pointer',
-                    border: queryType === qt.key ? '1.5px solid #185FA5' : '1px solid #ddd',
-                    background: queryType === qt.key ? '#E6F1FB' : '#fff',
-                    color: queryType === qt.key ? '#0C447C' : '#555',
-                    fontWeight: queryType === qt.key ? 500 : 400,
-                  }}>{qt.label}</button>
+                    padding: '10px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                    border: queryType === qt.key ? '1.5px solid #185FA5' : '1px solid #E5E7EB',
+                    background: queryType === qt.key ? '#EFF6FF' : '#F9FAFB',
+                    fontFamily: 'inherit',
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: queryType === qt.key ? '#185FA5' : '#374151', marginBottom: 3 }}>{qt.label}</div>
+                    <div style={{ fontSize: 12, color: '#9CA3AF', lineHeight: 1.4 }}>{qt.description}</div>
+                  </button>
                 ))}
               </div>
             </div>
-            {queryType === 'personas' && (
-              <ParamSlider label="Antall personas" min={1} max={8} step={1} value={nPersonas} onChange={setNPersonas} format={v => v} />
+          )}
+
+          {/* Advanced */}
+          <div style={{ marginBottom: 16 }}>
+            <SectionToggle open={advancedOpen} onToggle={() => setAdvancedOpen(p => !p)} label="Advanced" />
+            {advancedOpen && (
+              <div style={{ marginTop: 12, paddingLeft: 18 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14 }}>
+                  {mode === 'query' && <>
+                    <ParamSlider label="top_k" min={1} max={40} step={1} value={topK} onChange={setTopK} format={v => v} />
+                    <ParamSlider label="cutoff" min={0} max={1} step={0.05} value={cutoff} onChange={setCutoff} format={v => v.toFixed(2)} />
+                  </>}
+                  {mode === 'aggregate' && <>
+                    {queryType === 'personas' && (
+                      <ParamSlider label="Antall personas" min={1} max={8} step={1} value={nPersonas} onChange={setNPersonas} format={v => v} />
+                    )}
+                    <ParamSlider label="Chunks per doc" min={1} max={8} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} />
+                  </>}
+                </div>
+                {mode === 'aggregate' && <PromptsViewer queryType={queryType} defs={queryTypeDefs} />}
+              </div>
             )}
-            <ParamSlider label="Chunks per doc" min={1} max={8} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} />
           </div>
-          <PromptsViewer queryType={queryType} defs={queryTypeDefs} />
-        </>
-      )}
 
-      <div onClick={() => setFiltersOpen(p => !p)} onMouseDown={e => e.stopPropagation()}
-        style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}>
-        <span style={{ fontSize: 10, color: '#aaa', display: 'inline-block', transform: filtersOpen ? 'rotate(90deg)' : 'none', transition: 'transform .2s' }}>▶</span>
-        <span style={{ fontSize: 13, color: '#666' }}>Filters{activeCount > 0 ? ` (${activeCount} valgt)` : ''}</span>
+          {/* Filters */}
+          <div style={{ marginBottom: 16 }}>
+            <SectionToggle open={filtersOpen} onToggle={() => setFiltersOpen(p => !p)} label="Filters" badge={activeCount} />
+            {optionsErr && <div style={{ fontSize: 12, color: '#EF4444', marginTop: 6 }}>{optionsErr}</div>}
+            {filtersOpen && (
+              <FilterPanel
+                draft={draft}
+                onChangeDraft={handleDraftChange}
+                onApply={applyFilters}
+                onClear={clearFilters}
+                options={options}
+              />
+            )}
+            <ActiveFilterTags filters={activeFilters} onRemoveValue={removeValue} />
+          </div>
+
+          {/* Search input */}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={question}
+              onChange={e => setQuestion(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
+              placeholder={placeholder}
+              style={{
+                flex: 1, padding: '11px 16px', border: '1px solid #E5E7EB', borderRadius: 10,
+                fontSize: 15, outline: 'none', fontFamily: 'inherit',
+              }}
+            />
+            <button onClick={runQuery} disabled={loading} style={{
+              padding: '11px 24px', borderRadius: 10, border: 'none',
+              background: loading ? '#93C5FD' : '#185FA5',
+              color: '#fff', cursor: loading ? 'not-allowed' : 'pointer',
+              fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
+            }}>
+              {loading ? '…' : mode === 'aggregate' ? 'Analyser' : 'Spør'}
+            </button>
+          </div>
+
+          {/* Status */}
+          {status && (
+            <div style={{ marginTop: 10, fontSize: 13, color: statusErr ? '#EF4444' : '#6B7280' }}>
+              {status}
+            </div>
+          )}
+
+        </div>
+
+        {/* Results */}
+        {results.map((data, i) =>
+          data._type === 'aggregate'
+            ? <AggregateResultCard key={i} data={data} />
+            : <QueryResultCard key={i} data={data} />
+        )}
+
       </div>
-      {optionsErr && <div style={{ fontSize: 12, color: '#c0392b', marginBottom: 8 }}>{optionsErr}</div>}
-      {filtersOpen && (
-        <FilterPanel
-          draft={draft}
-          onChangeDraft={handleDraftChange}
-          onApply={applyFilters}
-          onClear={clearFilters}
-          options={options}
-        />
-      )}
-      <ActiveFilterTags filters={activeFilters} onRemoveValue={removeValue} />
-
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <input value={question} onChange={e => setQuestion(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
-          placeholder={placeholder}
-          style={{ flex: 1, padding: '10px 14px', border: '1px solid #ddd', borderRadius: 8, fontSize: 15 }} />
-        <button onClick={runQuery} disabled={loading} style={{
-          padding: '10px 20px', borderRadius: 8, border: '1px solid #ddd',
-          background: '#fff', cursor: 'pointer', fontSize: 15, whiteSpace: 'nowrap',
-        }}>
-          {loading ? '…' : mode === 'aggregate' ? 'Analyser' : 'Spør'}
-        </button>
-      </div>
-
-      {status && <div style={{ fontSize: 13, color: statusErr ? '#c0392b' : '#888', marginBottom: 14 }}>{status}</div>}
-
-      {results.map((data, i) =>
-        data._type === 'aggregate'
-          ? <AggregateResultCard key={i} data={data} />
-          : <QueryResultCard key={i} data={data} />
-      )}
     </div>
   )
 }
