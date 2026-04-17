@@ -260,11 +260,11 @@ function PromptsViewer({ queryType, defs }) {
   ]
   return (
     <div style={{ marginTop: 10, marginBottom: 14 }}>
-      <span onClick={() => setOpen(p => !p)}
-        style={{ fontSize: 12, color: '#aaa', cursor: 'pointer', userSelect: 'none' }}>
-        <span style={{ display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', marginRight: 4, fontSize: 10 }}>▶</span>
-        show prompts
-      </span>
+      <div onClick={() => setOpen(p => !p)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}>
+        <span style={{ fontSize: 10, color: '#aaa', display: 'inline-block', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .2s' }}>▶</span>
+        <span style={{ fontSize: 13, color: '#666' }}>Show prompts</span>
+      </div>
       {open && (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
           {fields.map(({ key, label }) => (
@@ -437,7 +437,7 @@ export default function App() {
     // Read filters from ref — guaranteed latest regardless of render cycle
     const filters = activeFiltersRef.current
     const filtersToSend = Object.keys(filters).length
-      ? Object.fromEntries(Object.entries(filters).map(([k, vals]) => [k, vals.join(',')]))
+      ? Object.fromEntries(Object.entries(filters).map(([k, vals]) => [k, vals.join(';')]))
       : undefined
 
     console.log('[runQuery] filters:', filtersToSend)
@@ -588,20 +588,7 @@ export default function App() {
         </>
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-        <input value={question} onChange={e => setQuestion(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
-          placeholder={placeholder}
-          style={{ flex: 1, padding: '10px 14px', border: '1px solid #ddd', borderRadius: 8, fontSize: 15 }} />
-        <button onClick={runQuery} disabled={loading} style={{
-          padding: '10px 20px', borderRadius: 8, border: '1px solid #ddd',
-          background: '#fff', cursor: 'pointer', fontSize: 15, whiteSpace: 'nowrap',
-        }}>
-          {loading ? '…' : mode === 'aggregate' ? 'Analyser' : 'Spør'}
-        </button>
-      </div>
-
-      <div onClick={() => setFiltersOpen(p => !p)}
+      <div onClick={() => setFiltersOpen(p => !p)} onMouseDown={e => e.stopPropagation()}
         style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}>
         <span style={{ fontSize: 10, color: '#aaa', display: 'inline-block', transform: filtersOpen ? 'rotate(90deg)' : 'none', transition: 'transform .2s' }}>▶</span>
         <span style={{ fontSize: 13, color: '#666' }}>Filters{activeCount > 0 ? ` (${activeCount} valgt)` : ''}</span>
@@ -617,6 +604,19 @@ export default function App() {
         />
       )}
       <ActiveFilterTags filters={activeFilters} onRemoveValue={removeValue} />
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <input value={question} onChange={e => setQuestion(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
+          placeholder={placeholder}
+          style={{ flex: 1, padding: '10px 14px', border: '1px solid #ddd', borderRadius: 8, fontSize: 15 }} />
+        <button onClick={runQuery} disabled={loading} style={{
+          padding: '10px 20px', borderRadius: 8, border: '1px solid #ddd',
+          background: '#fff', cursor: 'pointer', fontSize: 15, whiteSpace: 'nowrap',
+        }}>
+          {loading ? '…' : mode === 'aggregate' ? 'Analyser' : 'Spør'}
+        </button>
+      </div>
 
       {status && <div style={{ fontSize: 13, color: statusErr ? '#c0392b' : '#888', marginBottom: 14 }}>{status}</div>}
 
