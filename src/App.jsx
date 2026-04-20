@@ -358,6 +358,20 @@ function AggregateResultCard({ data }) {
         ? <div style={{ fontSize: 14, color: '#9CA3AF', padding: '1rem 0' }}>Ingen funn ble aggregert.</div>
         : items.map((item, i) => <AggregateItem key={i} item={item} queryType={data.query_type} />)
       )}
+      {!isLoading && data._job_id && (
+        <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #f0f0f0' }}>
+          <a href={`${webserverEndPoint.replace(/\/$/, '')}/aggregate/report/${data._job_id}`}
+            download
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 13, color: '#185FA5', textDecoration: 'none',
+              padding: '6px 14px', border: '1px solid #ddd', borderRadius: 8,
+              background: '#fff',
+            }}>
+            ⬇ Last ned rapport (.docx)
+          </a>
+        </div>
+      )}
     </div>
   )
 }
@@ -504,6 +518,7 @@ export default function App() {
         const { job_id } = await res.json()
 
         const patch = (p) => setResults(prev => prev.map(r => r._id === placeholderId ? { ...r, ...p } : r))
+        patch({ _job_id: job_id })
 
         let last = 0
         let done = false
