@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 
 const webserverEndPoint = import.meta.env.DEV
   ? 'http://localhost:80'
@@ -21,11 +21,18 @@ const QUERY_TYPES = [
 ]
 
 const TAG_COLORS = {
-  file:  { bg: '#E6F1FB', color: '#0C447C' },
-  page:  { bg: '#EAF3DE', color: '#27500A' },
-  score: { bg: '#FAEEDA', color: '#633806' },
-  seg:   { bg: '#EEEDFE', color: '#3C3489' },
-  pub:   { bg: '#E1F5EE', color: '#085041' },
+  file:  { bg: '#DBEAFE', color: '#1E40AF' },
+  page:  { bg: '#DCFCE7', color: '#166534' },
+  score: { bg: '#FEF3C7', color: '#92400E' },
+  seg:   { bg: '#EDE9FE', color: '#5B21B6' },
+  pub:   { bg: '#CCFBF1', color: '#0F766E' },
+}
+
+const QUERY_TYPE_COLORS = {
+  problems: { bg: '#FEE2E2', border: '#FCA5A5', color: '#991B1B' },
+  moments:  { bg: '#EDE9FE', border: '#A78BFA', color: '#5B21B6' },
+  personas: { bg: '#CCFBF1', border: '#5EEAD4', color: '#0F766E' },
+  free:     { bg: '#FEF9C3', border: '#FDE047', color: '#854D0E' },
 }
 
 const card = {
@@ -71,7 +78,7 @@ function SectionToggle({ open, onToggle, label, badge }) {
       <span style={{ fontSize: 13, color: '#6B7280' }}>{label}</span>
       {badge != null && badge > 0 && (
         <span style={{
-          background: '#185FA5', color: '#fff', borderRadius: 99,
+          background: '#2563EB', color: '#fff', borderRadius: 99,
           padding: '1px 7px', fontSize: 11, fontWeight: 600,
         }}>{badge}</span>
       )}
@@ -119,10 +126,10 @@ function MultiSelect({ label, options = [], selected, onChange }) {
             <label key={opt} style={{
               display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px',
               cursor: 'pointer', fontSize: 13,
-              background: selected.includes(opt) ? '#EFF6FF' : 'transparent',
+              background: selected.includes(opt) ? '#EEF2FF' : 'transparent',
             }}>
               <input type="checkbox" checked={selected.includes(opt)} onChange={() => toggle(opt)}
-                style={{ accentColor: '#185FA5' }} />
+                style={{ accentColor: '#2563EB' }} />
               {opt}
             </label>
           ))}
@@ -148,17 +155,20 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options }) {
   return (
     <div ref={panelRef} style={{ border: '1px solid #E5E7EB', borderRadius: 12, padding: '1rem', marginTop: 10, marginBottom: 12, background: '#FAFAFA' }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px 16px', marginBottom: 14 }}>
-        {FILTER_FIELDS.map(f => (
-          <MultiSelect key={f.key} label={f.label}
-            options={options[f.key] || []}
-            selected={draft[f.key] || []}
-            onChange={vals => onChangeDraft(f.key, vals)} />
-        ))}
+        {Object.entries(options).filter(([, vals]) => vals?.length > 0).map(([key, vals]) => {
+          const label = FILTER_FIELDS.find(f => f.key === key)?.label ?? key
+          return (
+            <MultiSelect key={key} label={label}
+              options={vals}
+              selected={draft[key] || []}
+              onChange={v => onChangeDraft(key, v)} />
+          )
+        })}
       </div>
       <div style={{ display: 'flex', gap: 8, borderTop: '1px solid #F3F4F6', paddingTop: 12 }}>
         <button onClick={onApply} style={{
           fontSize: 13, padding: '7px 16px', borderRadius: 8,
-          border: 'none', background: '#185FA5', color: '#fff', cursor: 'pointer', fontWeight: 500,
+          border: 'none', background: '#2563EB', color: '#fff', cursor: 'pointer', fontWeight: 500,
         }}>Apply filters</button>
         <button onClick={onClear} style={{
           fontSize: 13, padding: '7px 14px', borderRadius: 8,
@@ -179,7 +189,7 @@ function ActiveFilterTags({ filters, onRemoveValue }) {
           <span key={`${key}:${val}`} style={{
             display: 'inline-flex', alignItems: 'center', gap: 4,
             padding: '3px 8px 3px 10px', borderRadius: 99,
-            fontSize: 12, fontWeight: 500, background: '#EFF6FF', color: '#1D4ED8',
+            fontSize: 12, fontWeight: 500, background: '#EEF2FF', color: '#1D4ED8',
             border: '1px solid #BFDBFE',
           }}>
             <span style={{ color: '#3B82F6', marginRight: 2 }}>{FILTER_FIELDS.find(f => f.key === key)?.label ?? key}:</span>
@@ -199,7 +209,7 @@ function ParamSlider({ label, min, max, step, value, onChange, format }) {
       <label style={{ minWidth: 100 }}>{label}</label>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(step < 1 ? parseFloat(e.target.value) : parseInt(e.target.value))}
-        style={{ width: 100, accentColor: '#185FA5' }} />
+        style={{ width: 100, accentColor: '#2563EB' }} />
       <span style={{ fontWeight: 600, minWidth: 32, color: '#111827', fontSize: 13 }}>{format(value)}</span>
     </div>
   )
@@ -318,7 +328,7 @@ function ProgressBar({ index, total, tittel, nodeMessage }) {
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 13, color: '#6B7280', marginBottom: 8 }}>{nodeMessage || 'Kjører…'}</div>
       <div style={{ height: 6, background: '#F3F4F6', borderRadius: 99, overflow: 'hidden', marginBottom: 8 }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg, #185FA5, #3B82F6)', borderRadius: 99, transition: 'width .3s' }} />
+        <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg, #2563EB, #3B82F6)', borderRadius: 99, transition: 'width .3s' }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: '#9CA3AF' }}>
         <span style={{ maxWidth: 480, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tittel || ''}</span>
@@ -339,7 +349,7 @@ function AggregateResultCard({ data }) {
         <span style={metaLabel}>Aggregate analysis</span>
         {data.index_name && <Tag type="seg">{data.index_name}</Tag>}
         <Tag type="seg">{qt.label}</Tag>
-        {isLoading && <span style={{ fontSize: 12, color: '#185FA5', fontWeight: 500 }}>kjører…</span>}
+        {isLoading && <span style={{ fontSize: 12, color: '#2563EB', fontWeight: 500 }}>kjører…</span>}
       </div>
       <div style={{ fontSize: 15, fontWeight: 500, color: '#111827', marginBottom: 10 }}>{data.question}</div>
       {isLoading && (
@@ -364,7 +374,7 @@ function AggregateResultCard({ data }) {
             download
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
-              fontSize: 13, color: '#185FA5', textDecoration: 'none',
+              fontSize: 13, color: '#2563EB', textDecoration: 'none',
               padding: '6px 14px', border: '1px solid #ddd', borderRadius: 8,
               background: '#fff',
             }}>
@@ -380,7 +390,7 @@ function AggregateResultCard({ data }) {
 export default function App() {
   const [server, setServer]             = useState(webserverEndPoint)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [mode, setMode]                 = useState('query')
+  const [mode, setMode]                 = useState('aggregate')
   const [question, setQuestion]         = useState('')
   const [loading, setLoading]           = useState(false)
   const [status, setStatus]             = useState('')
@@ -390,13 +400,14 @@ export default function App() {
   const [selectedIndex, setSelectedIndex] = useState('')
   const selectedIndexRef                = useRef('')
   const [options, setOptions]           = useState({})
+  const [entries, setEntries]           = useState([])
   const [optionsErr, setOptionsErr]     = useState('')
   const [queryTypeDefs, setQueryTypeDefs] = useState({})
   const [filtersOpen, setFiltersOpen]   = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [topK, setTopK]                 = useState(5)
   const [cutoff, setCutoff]             = useState(0.30)
-  const [queryType, setQueryType]       = useState('problems')
+  const [queryType, setQueryType]       = useState('free')
   const [nPersonas, setNPersonas]       = useState(3)
   const [chunksPerDoc, setChunksPerDoc] = useState(4)
 
@@ -406,13 +417,22 @@ export default function App() {
   const activeFiltersRef                    = useRef({})
 
   useEffect(() => {
+    draftRef.current = {}
+    activeFiltersRef.current = {}
+    setDraft({})
+    setActiveFilters({})
+    setOptions({})
+
+    const controller = new AbortController()
     const base = server.replace(/\/$/, '')
-    const idx  = selectedIndexRef.current
-    const qs   = idx ? `?index_name=${encodeURIComponent(idx)}` : ''
-    fetch(`${base}/document-store/filter-options${qs}`)
+    const qs   = selectedIndex ? `?index_name=${encodeURIComponent(selectedIndex)}` : ''
+    const url  = `${base}/document-store/filter-options${qs}`
+    console.log('[filter-options] fetching:', url)
+    fetch(url, { signal: controller.signal })
       .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(data => { setOptions(data); setOptionsErr('') })
-      .catch(() => setOptionsErr('Could not load filter options from server'))
+      .then(({ _entries = [], ...fields }) => { setEntries(_entries); setOptions(fields); setOptionsErr('') })
+      .catch(err => { if (err.name !== 'AbortError') setOptionsErr('Could not load filter options from server') })
+    return () => controller.abort()
   }, [server, selectedIndex])
 
   useEffect(() => {
@@ -441,9 +461,8 @@ export default function App() {
 
   const applyFilters = useCallback(() => {
     const applied = {}
-    FILTER_FIELDS.forEach(({ key }) => {
-      const vals = draftRef.current[key] || []
-      if (vals.length) applied[key] = vals
+    Object.entries(draftRef.current).forEach(([key, vals]) => {
+      if (vals?.length) applied[key] = vals
     })
     activeFiltersRef.current = applied
     setActiveFilters(applied)
@@ -469,6 +488,26 @@ export default function App() {
   }
 
   const activeCount = Object.values(activeFilters).flat().length
+
+  const cascadingOptions = useMemo(() => {
+    if (!entries.length) return options
+    const result = {}
+    Object.keys(options).forEach(field => {
+      const filtered = entries.filter(entry =>
+        Object.entries(draft).every(([key, vals]) => {
+          if (key === field || !vals?.length) return true
+          const raw = String(entry[key] ?? '').trim()
+          return vals.some(v => raw.split(';').map(s => s.trim()).includes(v))
+        })
+      )
+      const vals = new Set()
+      filtered.forEach(entry => {
+        String(entry[field] ?? '').trim().split(';').forEach(p => { p = p.trim(); if (p) vals.add(p) })
+      })
+      result[field] = [...vals].sort()
+    })
+    return result
+  }, [entries, options, draft])
 
   const runQuery = async () => {
     const q = question.trim()
@@ -568,7 +607,7 @@ export default function App() {
     : QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv inn spørsmål…'
 
   return (
-    <div style={{ minHeight: '100vh', background: '#F4F5F7', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
+    <div style={{ minHeight: '100vh', background: '#EEF2FF', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif' }}>
       <div style={{ maxWidth: 820, margin: '0 auto', padding: '2rem 1.25rem' }}>
 
         {/* Header */}
@@ -582,8 +621,8 @@ export default function App() {
             title="Server settings"
             style={{
               padding: '8px 10px', borderRadius: 8, border: '1px solid #E5E7EB',
-              background: settingsOpen ? '#EFF6FF' : '#fff', cursor: 'pointer', fontSize: 17,
-              color: settingsOpen ? '#185FA5' : '#6B7280', lineHeight: 1,
+              background: settingsOpen ? '#EEF2FF' : '#fff', cursor: 'pointer', fontSize: 17,
+              color: settingsOpen ? '#2563EB' : '#6B7280', lineHeight: 1,
             }}
           >⚙</button>
         </div>
@@ -605,9 +644,9 @@ export default function App() {
               {indexes.map(name => (
                 <button key={name} onClick={() => { selectedIndexRef.current = name; setSelectedIndex(name) }} style={{
                   padding: '5px 14px', borderRadius: 99, fontSize: 13, cursor: 'pointer',
-                  border: selectedIndex === name ? '1.5px solid #185FA5' : '1px solid #E5E7EB',
-                  background: selectedIndex === name ? '#EFF6FF' : '#F9FAFB',
-                  color: selectedIndex === name ? '#185FA5' : '#4B5563',
+                  border: selectedIndex === name ? '1.5px solid #2563EB' : '1px solid #E5E7EB',
+                  background: selectedIndex === name ? '#EEF2FF' : '#F9FAFB',
+                  color: selectedIndex === name ? '#2563EB' : '#4B5563',
                   fontWeight: selectedIndex === name ? 600 : 400,
                 }}>{name}</button>
               ))}
@@ -637,17 +676,21 @@ export default function App() {
             <div style={{ marginBottom: 18 }}>
               <div style={{ ...metaLabel, marginBottom: 10 }}>Analysis type</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                {QUERY_TYPES.map(qt => (
-                  <button key={qt.key} onClick={() => setQueryType(qt.key)} style={{
-                    padding: '10px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                    border: queryType === qt.key ? '1.5px solid #185FA5' : '1px solid #E5E7EB',
-                    background: queryType === qt.key ? '#EFF6FF' : '#F9FAFB',
-                    fontFamily: 'inherit',
-                  }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: queryType === qt.key ? '#185FA5' : '#374151', marginBottom: 3 }}>{qt.label}</div>
-                    <div style={{ fontSize: 12, color: '#9CA3AF', lineHeight: 1.4 }}>{qt.description}</div>
-                  </button>
-                ))}
+                {QUERY_TYPES.map(qt => {
+                  const c = QUERY_TYPE_COLORS[qt.key]
+                  const active = queryType === qt.key
+                  return (
+                    <button key={qt.key} onClick={() => setQueryType(qt.key)} style={{
+                      padding: '10px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                      border: active ? `1.5px solid ${c.border}` : '1px solid #E5E7EB',
+                      background: active ? c.bg : '#F9FAFB',
+                      fontFamily: 'inherit',
+                    }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: active ? c.color : '#374151', marginBottom: 3 }}>{qt.label}</div>
+                      <div style={{ fontSize: 12, color: active ? c.color : '#9CA3AF', opacity: active ? 0.75 : 1, lineHeight: 1.4 }}>{qt.description}</div>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
@@ -684,7 +727,7 @@ export default function App() {
                 onChangeDraft={handleDraftChange}
                 onApply={applyFilters}
                 onClear={clearFilters}
-                options={options}
+                options={cascadingOptions}
               />
             )}
             <ActiveFilterTags filters={activeFilters} onRemoveValue={removeValue} />
@@ -704,7 +747,7 @@ export default function App() {
             />
             <button onClick={runQuery} disabled={loading} style={{
               padding: '11px 24px', borderRadius: 10, border: 'none',
-              background: loading ? '#93C5FD' : '#185FA5',
+              background: loading ? '#93C5FD' : '#2563EB',
               color: '#fff', cursor: loading ? 'not-allowed' : 'pointer',
               fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
             }}>
