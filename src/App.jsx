@@ -22,12 +22,25 @@ const FILTER_FIELDS = [
   { key: 'publisert_arstall', label: 'Årstall' },
 ]
 
+// Each query type can declare which indexes it applies to. An empty/missing
+// `indexes` list means the type is available for every index.
 const QUERY_TYPES = [
-  { key: 'problems', label: 'Problemer',         description: 'Hvilke problemer sliter unge med?' },
-  { key: 'moments',  label: 'Kritiske øyeblikk', description: 'Vendepunkter i unges liv' },
-  { key: 'personas', label: 'Personas',           description: 'Syntetiser personas basert på funn' },
-  { key: 'free',     label: 'Fri analyse',        description: 'Åpent spørsmål på tvers av alle dokumenter' },
+  { key: 'problems', label: 'Problemer',         description: 'Hvilke problemer sliter unge med?',          indexes: ['DigiUng_lab'] },
+  { key: 'moments',  label: 'Kritiske øyeblikk', description: 'Vendepunkter i unges liv',                   indexes: ['DigiUng_lab'] },
+  { key: 'personas', label: 'Personas',          description: 'Syntetiser personas basert på funn',         indexes: ['DigiUng_lab'] },
+  { key: 'free',     label: 'Fri analyse',       description: 'Åpent spørsmål på tvers av alle dokumenter' },
+  { key: 'strategisk_risiko', label: 'Strategisk risiko', description: 'Analysekjede per dokument: driver → sårbarhet → konsekvens → risiko', indexes: ['Strategisk_risiko'] },
 ]
+
+function queryTypesForIndex(indexName) {
+  return QUERY_TYPES.filter(qt => !qt.indexes?.length || qt.indexes.includes(indexName))
+}
+
+// query_type values that produce the structured analysekjede output.
+const STRUCTURED_OUTPUT_KEYS = {
+  problems: 'problems', moments: 'moments', personas: 'personas',
+  free: 'findings', strategisk_risiko: 'risikoomrader',
+}
 
 const EXAMPLE_QUESTIONS = {
   query: [
@@ -118,6 +131,7 @@ const QUERY_TYPE_TINT = {
   moments:  C.tintMoments,
   personas: C.successBg,
   free:     C.warnBg,
+  strategisk_risiko: C.accentSoft,
 }
 
 function applyTheme(name) {
@@ -133,6 +147,7 @@ function applyTheme(name) {
     moments:  C.tintMoments,
     personas: C.successBg,
     free:     C.warnBg,
+    strategisk_risiko: C.accentSoft,
   })
   if (typeof document !== 'undefined') {
     document.body.style.background = C.bg
@@ -426,46 +441,186 @@ function AggregateItem({ item, queryType }) {
           ))}
         </div>
       )}
-      {item.sources?.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
-          {item.sources.map((s, i) => {
-            const isObj = s && typeof s === 'object'
-            const tittel = isObj ? (s.tittel || '') : String(s)
-            const pages  = isObj ? (s.pages || []) : []
-            const url    = isObj ? (s.kilde_url || '').trim() : ''
-            const label  = tittel + (pages.length ? ` (s. ${pages.join(', ')})` : '')
-            const tag    = <Tag tone="neutral">{label}{url ? ' ↗' : ''}</Tag>
-            return url
-              ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>{tag}</a>
-              : <span key={i}>{tag}</span>
-          })}
+      <SourceTags sources={item.sources} />
+    </div>
+  )
+}
+
+function SourceTags({ sources }) {
+  if (!sources?.length) return null
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
+      {sources.map((s, i) => {
+        const isObj = s && typeof s === 'object'
+        const tittel = isObj ? (s.tittel || '') : String(s)
+        const pages  = isObj ? (s.pages || []) : []
+        const url    = isObj ? (s.kilde_url || '').trim() : ''
+        const label  = tittel + (pages.length ? ` (s. ${pages.join(', ')})` : '')
+        const tag    = <Tag tone="neutral">{label}{url ? ' ↗' : ''}</Tag>
+        return url
+          ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>{tag}</a>
+          : <span key={i}>{tag}</span>
+      })}
+    </div>
+  )
+}
+
+// ── Strategisk risiko rendering ────────────────────────────────────────────────
+
+function LabeledList({ label, values, tint }) {
+  const vals = (values || []).filter(v => String(v).trim())
+  if (!vals.length) return null
+  return (
+    <div style={{ marginBottom: 8 }}>
+      <div style={{ ...metaLabel, marginBottom: 6 }}>{label}</div>
+      {vals.map((v, i) => (
+        <div key={i} style={{ fontSize: 13, color: C.textMute, paddingLeft: 12, borderLeft: `2px solid ${tint || C.accentSoft}`, marginBottom: 4, lineHeight: 1.5 }}>{v}</div>
+      ))}
+    </div>
+  )
+}
+
+function RiskItem({ item }) {
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
+      <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6, color: C.text }}>{item.label}</div>
+      {item.beskrivelse && <div style={{ fontSize: 14, color: C.textMute, lineHeight: 1.65, marginBottom: 8 }}>{item.beskrivelse}</div>}
+      <LabeledList label="Drivere"      values={item.drivere} />
+      <LabeledList label="Sårbarheter"  values={item.sarbarheter} />
+      <LabeledList label="Konsekvenser" values={item.konsekvenser} />
+      <LabeledList label="Risikoer"     values={item.risikoer} tint={C.danger} />
+      <SourceTags sources={item.sources} />
+    </div>
+  )
+}
+
+function RiskDocAnalysis({ entry }) {
+  const [showChunks, setShowChunks] = useState(false)
+  const s = entry.structured || {}
+  const parts = [entry.tittel || entry.filename]
+  if (entry.publisert_av) parts.push(entry.publisert_av)
+  if (entry.publisert_arstall) parts.push(String(entry.publisert_arstall))
+  const heading = parts.filter(Boolean).join(' · ')
+  const url = (entry.kilde_url || '').trim()
+  const chunks = entry.chunks || []
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
+      <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: C.text }}>
+        {url
+          ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, textDecoration: 'none' }}>{heading} ↗</a>
+          : heading}
+      </div>
+      {s.relevans && <div style={{ fontSize: 13, color: C.textMute, marginBottom: 8, fontStyle: 'italic' }}>{s.relevans}</div>}
+      <LabeledList label="Kildefunn"            values={s.kildefunn} />
+      <LabeledList label="Drivere"              values={s.drivere} />
+      <LabeledList label="Mulige sårbarheter"   values={s.sarbarheter} />
+      <LabeledList label="Mulige konsekvenser"  values={s.konsekvenser} />
+      <LabeledList label="Foreløpige risikoer"  values={s.risikoer} tint={C.danger} />
+      <LabeledList label="Avklaringsspørsmål"   values={s.avklaringssporsmal} />
+      {s.kildegrunnlag_styrke && (
+        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 6 }}>
+          <span style={{ fontWeight: 600 }}>Kildegrunnlag:</span> {s.kildegrunnlag_styrke}
+        </div>
+      )}
+      {chunks.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <SectionToggle open={showChunks} onToggle={() => setShowChunks(p => !p)} label={`Kildehenvisninger (${chunks.length})`} />
+          {showChunks && chunks.map((c, i) => (
+            <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5 }}>
+              {c.page != null && <span style={{ fontWeight: 600 }}>[Side {c.page}] </span>}{c.excerpt}
+            </div>
+          ))}
         </div>
       )}
     </div>
   )
 }
 
-function PromptsViewer({ queryType, defs }) {
+const PROMPT_FIELDS = [
+  { key: 'extract_system',   label: 'Extract — system' },
+  { key: 'extract_prompt',   label: 'Extract — user' },
+  { key: 'aggregate_system', label: 'Aggregate — system' },
+  { key: 'aggregate_prompt', label: 'Aggregate — user' },
+]
+
+function PromptsEditor({ queryType, defs, server, onSaved }) {
   const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState({})
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [msgErr, setMsgErr] = useState(false)
   const cfg = defs[queryType]
+
+  // Reset local edits whenever the type or its loaded prompts change.
+  useEffect(() => { setDraft({}); setMsg('') }, [queryType, cfg])
+
   if (!cfg) return null
-  const fields = [
-    { key: 'extract_system',   label: 'Extract — system' },
-    { key: 'extract_prompt',   label: 'Extract — user' },
-    { key: 'aggregate_system', label: 'Aggregate — system' },
-    { key: 'aggregate_prompt', label: 'Aggregate — user' },
-  ]
+
+  const valueOf = (key) => (draft[key] !== undefined ? draft[key] : (cfg[key] || ''))
+  const dirty = PROMPT_FIELDS.some(f => draft[f.key] !== undefined && draft[f.key] !== (cfg[f.key] || ''))
+  const base = server.replace(/\/$/, '')
+
+  const save = async () => {
+    setBusy(true); setMsg(''); setMsgErr(false)
+    try {
+      const body = {}
+      PROMPT_FIELDS.forEach(f => { body[f.key] = valueOf(f.key) })
+      const res = await fetch(`${base}/admin/query-types/${queryType}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText) }
+      setDraft({}); setMsg('Lagret'); onSaved && await onSaved()
+    } catch (e) { setMsgErr(true); setMsg(`Feil: ${e.message}`) } finally { setBusy(false) }
+  }
+
+  const reset = async () => {
+    setBusy(true); setMsg(''); setMsgErr(false)
+    try {
+      const res = await fetch(`${base}/admin/query-types/${queryType}`, { method: 'DELETE' })
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText) }
+      setDraft({}); setMsg('Tilbakestilt til standard'); onSaved && await onSaved()
+    } catch (e) { setMsgErr(true); setMsg(`Feil: ${e.message}`) } finally { setBusy(false) }
+  }
+
   return (
     <div style={{ marginTop: 14 }}>
-      <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label="Vis prompts" />
+      <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label="Rediger prompts" />
       {open && (
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {fields.map(({ key, label }) => (
+          {PROMPT_FIELDS.map(({ key, label }) => (
             <div key={key}>
               <div style={{ ...metaLabel, marginBottom: 4 }}>{label}</div>
-              <pre style={{ margin: 0, padding: '8px 12px', background: C.bg, borderRadius: 8, fontSize: 12, color: C.text, whiteSpace: 'pre-wrap', wordBreak: 'break-word', border: `1px solid ${C.border}` }}>{cfg[key]}</pre>
+              <textarea
+                value={valueOf(key)}
+                onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))}
+                spellCheck={false}
+                style={{
+                  width: '100%', boxSizing: 'border-box', minHeight: 90, resize: 'vertical',
+                  padding: '8px 12px', background: C.bg, borderRadius: 8, fontSize: 12,
+                  color: C.text, border: `1px solid ${C.border}`, fontFamily: 'monospace',
+                  lineHeight: 1.5, outline: 'none',
+                }}
+                onFocus={e => e.target.style.borderColor = C.accent}
+                onBlur={e => e.target.style.borderColor = C.border}
+              />
             </div>
           ))}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button onClick={save} disabled={busy || !dirty} style={{
+              padding: '8px 16px', borderRadius: 8, border: 'none',
+              background: busy || !dirty ? '#93C5FD' : C.accent, color: '#fff',
+              cursor: busy || !dirty ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
+            }}>Lagre</button>
+            <button onClick={reset} disabled={busy} style={{
+              padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`,
+              background: C.surface, color: C.textMute, cursor: busy ? 'not-allowed' : 'pointer',
+              fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
+            }}>Tilbakestill til standard</button>
+            {msg && <span style={{ fontSize: 12, color: msgErr ? C.danger : C.success }}>{msg}</span>}
+          </div>
+          <div style={{ fontSize: 11, color: C.textFaint }}>
+            Endringer lagres på serveren og brukes ved neste analyse. Plassholdere som {'{question}'}, {'{tittel}'}, {'{context}'} må beholdes.
+          </div>
         </div>
       )}
     </div>
@@ -490,9 +645,11 @@ function ProgressBar({ index, total, tittel, nodeMessage }) {
 
 function AggregateResultCard({ data }) {
   const qt = QUERY_TYPES.find(q => q.key === data.query_type) || QUERY_TYPES[0]
-  const outputKeys = { problems: 'problems', moments: 'moments', personas: 'personas', free: 'findings' }
-  const items = data[outputKeys[data.query_type]] || []
+  const items = data[STRUCTURED_OUTPUT_KEYS[data.query_type]] || []
   const isLoading = data._loading
+  const isRisk = data.query_type === 'strategisk_risiko'
+  const perDoc = data.per_doc_findings || []
+  const sectionHeading = { fontSize: 13, fontWeight: 700, color: C.text, margin: '4px 0 2px', textTransform: 'uppercase', letterSpacing: '.04em' }
   return (
     <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -510,10 +667,35 @@ function AggregateResultCard({ data }) {
         <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14, display: 'flex', gap: 16 }}>
           <span>{data.documents_visited} dokumenter besøkt</span>
           <span>{data.documents_with_findings} med funn</span>
-          <span>{items.length} {qt.label.toLowerCase()}</span>
+          {isRisk
+            ? (data.aggregated
+                ? <span>{items.length} risikoområder</span>
+                : <span>analyse per dokument</span>)
+            : <span>{items.length} {qt.label.toLowerCase()}</span>}
         </div>
       )}
-      {!isLoading && (items.length === 0
+
+      {!isLoading && isRisk && (
+        <>
+          {data.aggregated && (items.length > 0 || (data.monstre || []).length > 0) && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={sectionHeading}>Syntese på tvers (longlist)</div>
+              <LabeledList label="Overordnede mønstre" values={data.monstre} />
+              {items.map((item, i) => <RiskItem key={i} item={item} />)}
+              <div style={{ marginTop: 12 }}>
+                <LabeledList label="Usikkerhet og kunnskapshull" values={data.usikkerhet_kunnskapshull} />
+                <LabeledList label="Spørsmål til ledergruppen" values={data.sporsmal_til_ledergruppen} />
+              </div>
+            </div>
+          )}
+          <div style={sectionHeading}>Analyse per dokument</div>
+          {perDoc.length === 0
+            ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen dokumenter ga funn.</div>
+            : perDoc.map((entry, i) => <RiskDocAnalysis key={i} entry={entry} />)}
+        </>
+      )}
+
+      {!isLoading && !isRisk && (items.length === 0
         ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen funn ble aggregert.</div>
         : items.map((item, i) => <AggregateItem key={i} item={item} queryType={data.query_type} />)
       )}
@@ -1350,8 +1532,25 @@ export default function App() {
   const [topK, setTopK]                 = useState(5)
   const [cutoff, setCutoff]             = useState(0.30)
   const [queryType, setQueryType]       = useState('free')
+
+  // Per-index query type filtering: only show analysis types that apply to
+  // the currently selected index. Common types (no `indexes` list) are
+  // available everywhere.
+  const availableQueryTypes = useMemo(
+    () => queryTypesForIndex(selectedIndex),
+    [selectedIndex]
+  )
+
+  // If the active query type isn't available for the new index, fall back to
+  // the first available type (typically 'free').
+  useEffect(() => {
+    if (!availableQueryTypes.some(qt => qt.key === queryType)) {
+      setQueryType(availableQueryTypes[0]?.key || 'free')
+    }
+  }, [availableQueryTypes, queryType])
   const [nPersonas, setNPersonas]       = useState(3)
-  const [chunksPerDoc, setChunksPerDoc] = useState(4)
+  const [chunksPerDoc, setChunksPerDoc] = useState(8)
+  const [includeAggregate, setIncludeAggregate] = useState(false)
 
   const [draft, setDraft]                   = useState({})
   const draftRef                            = useRef({})
@@ -1376,6 +1575,14 @@ export default function App() {
     return () => controller.abort()
   }, [server, selectedIndex])
 
+  const refreshQueryTypes = useCallback(() => {
+    const base = server.replace(/\/$/, '')
+    return fetch(`${base}/query-types`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(setQueryTypeDefs)
+      .catch(() => {})
+  }, [server])
+
   useEffect(() => {
     const base = server.replace(/\/$/, '')
     fetch(`${base}/indexes`)
@@ -1388,11 +1595,8 @@ export default function App() {
         }
       })
       .catch(() => {})
-    fetch(`${base}/query-types`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(setQueryTypeDefs)
-      .catch(() => {})
-  }, [server])
+    refreshQueryTypes()
+  }, [server, refreshQueryTypes])
 
   const handleDraftChange = (field, vals) => {
     const next = { ...draftRef.current, [field]: vals }
@@ -1505,7 +1709,12 @@ export default function App() {
           : r))
 
       } else {
-        const body = { question: q, query_type: queryType, n_personas: nPersonas, chunks_per_doc: chunksPerDoc, index_name: selectedIndexRef.current }
+        const body = {
+          question: q, query_type: queryType, n_personas: nPersonas,
+          chunks_per_doc: chunksPerDoc, index_name: selectedIndexRef.current,
+          // Cross-document syntese is opt-in for strategisk_risiko; other types always aggregate.
+          include_aggregate: queryType === 'strategisk_risiko' ? includeAggregate : true,
+        }
         if (filtersToSend) body.filters = filtersToSend
 
         const placeholderId = Date.now()
@@ -1548,8 +1757,7 @@ export default function App() {
             } else if (evt.event === 'doc_done') {
               patch({ documents_visited: evt.index + 1 })
             } else if (evt.event === 'result') {
-              const outputKeys = { problems: 'problems', moments: 'moments', personas: 'personas', free: 'findings' }
-              const items = evt[outputKeys[queryType]] || []
+              const items = evt[STRUCTURED_OUTPUT_KEYS[queryType]] || []
               setStatus(`${evt.documents_visited} dokumenter · ${evt.documents_with_findings} med funn · ${items.length} resultater`)
               patch({ ...evt, _loading: false, _type: 'aggregate' })
               done = true
@@ -1725,7 +1933,7 @@ export default function App() {
         {mode === 'aggregate' && (
           <div style={{ marginBottom: 16 }}>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
-              {QUERY_TYPES.map(qt => {
+              {availableQueryTypes.map(qt => {
                 const active = queryType === qt.key
                 return (
                   <button key={qt.key} onClick={() => setQueryType(qt.key)} style={{
@@ -1747,6 +1955,12 @@ export default function App() {
                 )
               })}
             </div>
+            {queryType === 'strategisk_risiko' && (
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: C.textMute, cursor: 'pointer' }}>
+                <input type="checkbox" checked={includeAggregate} onChange={e => setIncludeAggregate(e.target.checked)} />
+                Aggreger på tvers av dokumenter (longlist) — ellers vises kun analyse per dokument
+              </label>
+            )}
           </div>
         )}
 
@@ -1831,10 +2045,17 @@ export default function App() {
                   {queryType === 'personas' && (
                     <ParamSlider label="Antall personas" min={1} max={8} step={1} value={nPersonas} onChange={setNPersonas} format={v => v} />
                   )}
-                  <ParamSlider label="Chunks per doc" min={1} max={8} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} />
+                  <ParamSlider label="Chunks per doc" min={1} max={16} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} />
                 </>}
               </div>
-              {mode === 'aggregate' && <PromptsViewer queryType={queryType} defs={queryTypeDefs} />}
+              {mode === 'aggregate' && (
+                <PromptsEditor
+                  queryType={queryType}
+                  defs={queryTypeDefs}
+                  server={server}
+                  onSaved={refreshQueryTypes}
+                />
+              )}
             </div>
           )}
         </div>
