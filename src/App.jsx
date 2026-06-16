@@ -145,6 +145,7 @@ const THEMES = {
 const THEME_LIST = Object.entries(THEMES).map(([key, t]) => ({ key, ...t }))
 const DEFAULT_THEME = 'slate'
 const THEME_STORAGE_KEY = 'digiung_lab.theme'
+const INDEX_STORAGE_KEY = 'digiung_lab.index'
 
 // Mutable palette objects — components reference these by name and read fresh
 // values on every render, so mutating in place updates the whole UI on theme switch.
@@ -560,7 +561,7 @@ function RiskDocAnalysis({ entry }) {
         <div style={{ marginTop: 8 }}>
           <SectionToggle open={showChunks} onToggle={() => setShowChunks(p => !p)} label={`Kildehenvisninger (${chunks.length})`} />
           {showChunks && chunks.map((c, i) => (
-            <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5 }}>
+            <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
               {c.page != null && <span style={{ fontWeight: 600 }}>[Side {c.page}] </span>}{c.excerpt}
               {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
             </div>
@@ -1630,13 +1631,24 @@ export default function App() {
       .then(list => {
         setIndexes(list)
         if (list.length && !selectedIndexRef.current) {
-          selectedIndexRef.current = list[0]
-          setSelectedIndex(list[0])
+          // Restore the last-used index when it still exists, else default to first.
+          let saved = ''
+          try { saved = window.localStorage.getItem(INDEX_STORAGE_KEY) || '' } catch {}
+          const initial = list.includes(saved) ? saved : list[0]
+          selectedIndexRef.current = initial
+          setSelectedIndex(initial)
         }
       })
       .catch(() => {})
     refreshQueryTypes()
   }, [server, refreshQueryTypes])
+
+  // Remember the selected index across sessions (mirrors theme persistence).
+  useEffect(() => {
+    if (selectedIndex) {
+      try { window.localStorage.setItem(INDEX_STORAGE_KEY, selectedIndex) } catch {}
+    }
+  }, [selectedIndex])
 
   // Poll /health until the server reports all indexes loaded. Keeps polling
   // (slower) while not ready so a recovery (e.g. after reindex) is picked up.
