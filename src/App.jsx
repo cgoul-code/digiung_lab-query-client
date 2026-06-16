@@ -42,17 +42,50 @@ const STRUCTURED_OUTPUT_KEYS = {
   free: 'findings', strategisk_risiko: 'risikoomrader',
 }
 
+// Example questions are keyed by index name, then by mode. `_default` is used
+// for any index without a tailored set (and as a per-mode fallback).
 const EXAMPLE_QUESTIONS = {
-  query: [
-    'Hva sier rapportene om skolefravær?',
-    'Hvilke risikofaktorer henger sammen med ungdomskriminalitet?',
-    'Hvordan påvirker sosiale medier mental helse hos unge?',
-  ],
-  aggregate: [
-    'Hvilke utfordringer er gjennomgående i materialet?',
-    'Hva er de viktigste vendepunktene i unges liv?',
-    'Hvilke temaer beskrives på tvers av dokumentene?',
-  ],
+  _default: {
+    query: [
+      'Hva sier dokumentene om dette temaet?',
+      'Hvilke sammenhenger beskrives i materialet?',
+      'Hva er hovedfunnene knyttet til problemstillingen?',
+    ],
+    aggregate: [
+      'Hvilke temaer er gjennomgående i materialet?',
+      'Hva er de viktigste funnene på tvers av dokumentene?',
+      'Hvilke mønstre beskrives i flere av dokumentene?',
+    ],
+  },
+  DigiUng_lab: {
+    query: [
+      'Hva sier rapportene om skolefravær?',
+      'Hvilke risikofaktorer henger sammen med ungdomskriminalitet?',
+      'Hvordan påvirker sosiale medier mental helse hos unge?',
+    ],
+    aggregate: [
+      'Hvilke utfordringer er gjennomgående blant unge i materialet?',
+      'Hva er de viktigste vendepunktene i unges liv?',
+      'Hvilke behov beskrives på tvers av dokumentene?',
+    ],
+  },
+  Strategisk_risiko: {
+    query: [
+      'Hva sier dokumentene om Helsedirektoratets samfunnsoppdrag?',
+      'Hvilke styringskrav fremgår av tildelingsbrevene?',
+      'Hva sier Riksrevisjonen om direktoratets måloppnåelse?',
+    ],
+    aggregate: [
+      'Hvilke strategiske risikoer fremgår på tvers av dokumentene?',
+      'Hvilke drivere og sårbarheter er gjennomgående?',
+      'Hvilke kunnskapshull bør ledergruppen være oppmerksom på?',
+    ],
+  },
+}
+
+function examplesFor(indexName, mode) {
+  const byIndex = EXAMPLE_QUESTIONS[indexName] || EXAMPLE_QUESTIONS._default
+  return byIndex[mode] || EXAMPLE_QUESTIONS._default[mode] || []
 }
 
 // ── Themes ────────────────────────────────────────────────────────────────────
@@ -356,7 +389,8 @@ function ParamSlider({ label, min, max, step, value, onChange, format }) {
 
 function SourceItem({ src }) {
   const [open, setOpen] = useState(false)
-  const url = (src.kilde_url || '').trim()
+  // Web sources get a passage deep link; fall back to the plain source URL.
+  const url = (src.deep_link || src.kilde_url || '').trim()
   const reportName = src.tittel || src.filename || 'unknown'
   return (
     <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10, marginTop: 10 }}>
@@ -528,6 +562,7 @@ function RiskDocAnalysis({ entry }) {
           {showChunks && chunks.map((c, i) => (
             <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5 }}>
               {c.page != null && <span style={{ fontWeight: 600 }}>[Side {c.page}] </span>}{c.excerpt}
+              {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
             </div>
           ))}
         </div>
@@ -1470,8 +1505,8 @@ const inp = {
   },
 }
 
-function EmptyState({ mode, onPick }) {
-  const examples = EXAMPLE_QUESTIONS[mode] || []
+function EmptyState({ mode, indexName, onPick }) {
+  const examples = examplesFor(indexName, mode)
   return (
     <div style={{ ...card, padding: '2rem 1.75rem', textAlign: 'center' }}>
       <div style={{ fontSize: 15, color: C.text, fontWeight: 600, marginBottom: 6 }}>
@@ -1518,6 +1553,11 @@ export default function App() {
   const [loading, setLoading]           = useState(false)
   const [status, setStatus]             = useState('')
   const [statusErr, setStatusErr]       = useState(false)
+  // Server index-load readiness (polled from /health). Querying is blocked
+  // until every index has finished loading — no silent fallback to another one.
+  const [health, setHealth]             = useState({ state: 'loading', message: 'Kobler til serveren…', loaded: [], expected: [], failed: {} })
+  const healthRef                       = useRef(health)
+  healthRef.current = health
   const cancelRef                       = useRef({ controller: null, jobId: null, cancelled: false })
   const [results, setResults]           = useState([])
   const [indexes, setIndexes]           = useState([])
@@ -1598,6 +1638,37 @@ export default function App() {
     refreshQueryTypes()
   }, [server, refreshQueryTypes])
 
+  // Poll /health until the server reports all indexes loaded. Keeps polling
+  // (slower) while not ready so a recovery (e.g. after reindex) is picked up.
+  useEffect(() => {
+    const base = server.replace(/\/$/, '')
+    let cancelled = false
+    let timer = null
+    const poll = async () => {
+      try {
+        const r = await fetch(`${base}/health`, { cache: 'no-store' })
+        const d = await r.json()
+        if (cancelled) return
+        const ready = !!d.ready
+        setHealth({
+          state:    ready ? 'ready' : (d.status === 'error' ? 'error' : 'loading'),
+          message:  d.message || '',
+          loaded:   d.loaded || d.indexes_loaded || [],
+          expected: d.expected || [],
+          failed:   d.failed || {},
+        })
+        if (!ready) timer = setTimeout(poll, 2500)
+      } catch {
+        if (cancelled) return
+        setHealth({ state: 'error', message: 'Får ikke kontakt med serveren.', loaded: [], expected: [], failed: {} })
+        timer = setTimeout(poll, 4000)
+      }
+    }
+    setHealth(h => ({ ...h, state: 'loading', message: 'Kobler til serveren…' }))
+    poll()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [server])
+
   const handleDraftChange = (field, vals) => {
     const next = { ...draftRef.current, [field]: vals }
     draftRef.current = next
@@ -1670,7 +1741,16 @@ export default function App() {
 
   const runQuery = async (overrideQuestion) => {
     const q = (overrideQuestion ?? question).trim()
-    if (!q) return
+    // Aggregate mode may run without a question — the analysis is then driven by
+    // the query type's system prompt. Query mode still requires a question.
+    if (!q && mode !== 'aggregate') return
+    // Block until the server has loaded all indexes — avoids querying the wrong
+    // (or no) index while loading is still in progress.
+    if (healthRef.current.state !== 'ready') {
+      setStatusErr(true)
+      setStatus(healthRef.current.message || 'Serveren er ikke klar ennå — vent til indeksene er lastet.')
+      return
+    }
     if (overrideQuestion) setQuestion(overrideQuestion)
     setLoading(true)
     setStatus(mode === 'aggregate' ? 'Analyserer dokumenter — dette tar 1–3 min…' : 'Søker…')
@@ -1795,7 +1875,8 @@ export default function App() {
 
   const placeholder = mode === 'query'
     ? 'Still et spørsmål om et tema i dokumentene…'
-    : QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…'
+    : (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
+      + ' (valgfritt — la stå tomt for å bruke systemprompten)'
 
   return (
     <div style={{
@@ -1877,6 +1958,31 @@ export default function App() {
         )}
 
         {view === 'search' && <>
+        {/* Index-load readiness banner — querying is blocked until ready */}
+        {health.state !== 'ready' && (
+          <div style={{
+            ...card, padding: '0.9rem 1.25rem', marginBottom: 16,
+            border: `1px solid ${health.state === 'error' ? C.danger : C.borderHi}`,
+            background: health.state === 'error' ? C.dangerBg : C.accentBg,
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4,
+              color: health.state === 'error' ? C.danger : C.text }}>
+              {health.state === 'error' ? 'Serveren er ikke klar' : 'Laster inn indekser…'}
+            </div>
+            <div style={{ fontSize: 13, color: C.textMute }}>
+              {health.message || (health.state === 'error'
+                ? 'Kunne ikke laste alle indeksene.'
+                : 'Venter på at alle indekser er lastet inn før søk kan kjøres.')}
+            </div>
+            {health.expected.length > 0 && (
+              <div style={{ fontSize: 12, color: C.textFaint, marginTop: 6 }}>
+                {health.loaded.length}/{health.expected.length} indekser lastet
+                {Object.keys(health.failed || {}).length > 0 &&
+                  ` · feilet: ${Object.keys(health.failed).join(', ')}`}
+              </div>
+            )}
+          </div>
+        )}
         {/* Server settings */}
         {settingsOpen && (
           <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
@@ -1979,10 +2085,10 @@ export default function App() {
               onFocus={e => e.target.style.borderColor = C.accent}
               onBlur={e => e.target.style.borderColor = C.border}
             />
-            <button onClick={() => runQuery()} disabled={loading || !question.trim()} style={{
+            <button onClick={() => runQuery()} disabled={loading || health.state !== 'ready' || (mode !== 'aggregate' && !question.trim())} style={{
               padding: '12px 24px', borderRadius: 10, border: 'none',
-              background: loading || !question.trim() ? '#93C5FD' : C.accent,
-              color: '#fff', cursor: loading || !question.trim() ? 'not-allowed' : 'pointer',
+              background: loading || health.state !== 'ready' || (mode !== 'aggregate' && !question.trim()) ? '#93C5FD' : C.accent,
+              color: '#fff', cursor: loading || health.state !== 'ready' || (mode !== 'aggregate' && !question.trim()) ? 'not-allowed' : 'pointer',
               fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
               minWidth: 110,
             }}>
@@ -2062,7 +2168,7 @@ export default function App() {
 
         {/* Results */}
         {results.length === 0 && !loading && (
-          <EmptyState mode={mode} onPick={q => runQuery(q)} />
+          <EmptyState mode={mode} indexName={selectedIndex} onPick={q => runQuery(q)} />
         )}
         {results.map((data, i) =>
           data._type === 'aggregate'
