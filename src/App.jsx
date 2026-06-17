@@ -146,6 +146,8 @@ const THEME_LIST = Object.entries(THEMES).map(([key, t]) => ({ key, ...t }))
 const DEFAULT_THEME = 'slate'
 const THEME_STORAGE_KEY = 'digiung_lab.theme'
 const INDEX_STORAGE_KEY = 'digiung_lab.index'
+const MODE_STORAGE_KEY = 'digiung_lab.mode'
+const QUERYTYPE_STORAGE_KEY = 'digiung_lab.queryType'
 
 // Mutable palette objects — components reference these by name and read fresh
 // values on every render, so mutating in place updates the whole UI on theme switch.
@@ -1549,7 +1551,10 @@ export default function App() {
     try { window.localStorage.setItem(THEME_STORAGE_KEY, themeName) } catch {}
   }, [themeName])
   const [view, setView]                 = useState('search')   // 'search' | 'admin'
-  const [mode, setMode]                 = useState('aggregate')
+  const [mode, setMode]                 = useState(() => {
+    try { const s = window.localStorage.getItem(MODE_STORAGE_KEY); if (s === 'query' || s === 'aggregate') return s } catch {}
+    return 'aggregate'
+  })
   const [question, setQuestion]         = useState('')
   const [loading, setLoading]           = useState(false)
   const [status, setStatus]             = useState('')
@@ -1573,6 +1578,13 @@ export default function App() {
   const [topK, setTopK]                 = useState(5)
   const [cutoff, setCutoff]             = useState(0.30)
   const [queryType, setQueryType]       = useState('free')
+  // Frozen snapshot of the last-used report type, read once at mount. We can't
+  // init queryType from it directly: until the saved index loads, that report
+  // type may not be "available" yet and the reset effect below would wipe it.
+  // Instead we restore it in the /indexes handler once the index is known.
+  const [savedQueryType] = useState(() => {
+    try { return window.localStorage.getItem(QUERYTYPE_STORAGE_KEY) || '' } catch { return '' }
+  })
 
   // Per-index query type filtering: only show analysis types that apply to
   // the currently selected index. Common types (no `indexes` list) are
@@ -1589,6 +1601,14 @@ export default function App() {
       setQueryType(availableQueryTypes[0]?.key || 'free')
     }
   }, [availableQueryTypes, queryType])
+
+  // Persist report type + mode so the app resumes where the user left off.
+  useEffect(() => {
+    try { window.localStorage.setItem(QUERYTYPE_STORAGE_KEY, queryType) } catch {}
+  }, [queryType])
+  useEffect(() => {
+    try { window.localStorage.setItem(MODE_STORAGE_KEY, mode) } catch {}
+  }, [mode])
   const [nPersonas, setNPersonas]       = useState(3)
   const [chunksPerDoc, setChunksPerDoc] = useState(8)
   const [includeAggregate, setIncludeAggregate] = useState(false)
@@ -1637,6 +1657,10 @@ export default function App() {
           const initial = list.includes(saved) ? saved : list[0]
           selectedIndexRef.current = initial
           setSelectedIndex(initial)
+          // Restore the last-used report type if it's valid for this index.
+          if (savedQueryType && queryTypesForIndex(initial).some(qt => qt.key === savedQueryType)) {
+            setQueryType(savedQueryType)
+          }
         }
       })
       .catch(() => {})
