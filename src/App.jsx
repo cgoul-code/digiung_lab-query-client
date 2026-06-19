@@ -765,6 +765,7 @@ const ADMIN_FIELDS = [
   { key: 'type_kilde',        label: 'Type kilde',    type: 'text' },
   { key: 'malgruppe',         label: 'Målgruppe',     type: 'text' },
   { key: 'antall_deltakere',  label: 'Ant. deltakere', type: 'text' },
+  { key: 'kilde_url',         label: 'Kilde-URL (sitatlenke)', type: 'text' },
   { key: 'oppsummering',      label: 'Oppsummering',  type: 'textarea' },
 ]
 
@@ -775,16 +776,36 @@ function entrySource(entry) {
   return '—'
 }
 
-function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted }) {
+function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(entry)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const replaceInputRef = useRef(null)
 
   const key = entryKey(entry)
 
   const startEdit = () => { setDraft(entry); setEditing(true); setErr('') }
   const cancel    = () => { setEditing(false); setErr('') }
+
+  // Replace a URL entry (e.g. one the server can't fetch because of a 403) with
+  // an uploaded local copy. The backend carries over metadata and keeps the
+  // original URL as kilde_url so citation links still work.
+  const replaceWithFile = async (selFile) => {
+    if (!selFile) return
+    if (!confirm(`Erstatt URL-oppføringen «${entry.tittel || entrySource(entry)}» med filen «${selFile.name}»?\nDen opprinnelige URL-en beholdes som kilde_url for sitatlenker.`)) return
+    setBusy(true); setErr('')
+    try {
+      const url = `${server.replace(/\/$/, '')}/admin/entries?index_name=${encodeURIComponent(indexName)}`
+      const fd = new FormData()
+      fd.append('file', selFile)
+      fd.append('replace_key', key)
+      const res = await fetch(url, { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      onChanged?.()
+    } catch (e) { setErr(e.message); setBusy(false) }
+  }
 
   const save = async () => {
     setBusy(true); setErr('')
@@ -830,6 +851,14 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted }) {
               <div style={{ fontSize: 12, color: C.textMute }}>{entry.segment || '—'}</div>
               <div style={{ fontSize: 12, color: C.textMute }}>{entry.publisert_arstall ?? '—'}</div>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                {entry.url && (
+                  <>
+                    <input ref={replaceInputRef} type="file" accept=".pdf,.pptx,.ppt" style={{ display: 'none' }}
+                      onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; replaceWithFile(f) }} />
+                    <button onClick={() => replaceInputRef.current?.click()} disabled={busy} style={btn.ghost}
+                      title="Last opp en lokal kopi og erstatt denne URL-oppføringen (for kilder serveren ikke får hentet)">Erstatt med fil</button>
+                  </>
+                )}
                 <button onClick={startEdit} disabled={busy} style={btn.ghost}>Rediger</button>
                 <button onClick={remove}    disabled={busy} style={btn.danger}>Slett</button>
               </div>
@@ -1468,7 +1497,7 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
               {entries.map((entry, i) => (
                 <AdminEntryRow key={entryKey(entry) || i}
                   entry={entry} server={server} indexName={indexName}
-                  onSaved={handleSaved} onDeleted={handleDeleted} />
+                  onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load} />
               ))}
             </tbody>
           </table>
