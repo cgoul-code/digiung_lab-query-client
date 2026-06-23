@@ -958,6 +958,52 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
   const [meta, setMeta] = useState({})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [fetching, setFetching] = useState(false)  // downloading the URL server-side
+
+  // Best-effort filename from a document URL; falls back to document.pdf.
+  const deriveName = (u) => {
+    try {
+      const name = decodeURIComponent(new URL(u).pathname.split('/').pop() || '')
+      return /\.(pdf|pptx|ppt)$/i.test(name) ? name : `${name || 'document'}.pdf`
+    } catch { return 'document.pdf' }
+  }
+
+  // True when the URL's path ends in a downloadable document extension. The
+  // server-side fetch only makes sense for direct file links, so we gate the
+  // "Last ned" button on this rather than enabling it for any URL.
+  const urlLooksLikeDoc = (u) => {
+    try {
+      return /\.(pdf|pptx|ppt)$/i.test(new URL(u).pathname)
+    } catch { return false }
+  }
+
+  // Pull the PDF/PPTX at meta.url through the server (avoids browser CORS) and
+  // load it as the selected file, so the user doesn't have to download + browse.
+  const fetchUrlAsFile = async () => {
+    const u = (meta.url || '').trim()
+    if (!u) return
+    setFetching(true); setErr('')
+    try {
+      const base = server.replace(/\/$/, '')
+      const res = await fetch(`${base}/admin/fetch-url?url=${encodeURIComponent(u)}`)
+      if (!res.ok) {
+        let msg = res.statusText
+        try { msg = (await res.json()).error || msg } catch { /* non-JSON error */ }
+        throw new Error(msg)
+      }
+      const blob = await res.blob()
+      // Content-Disposition is only readable same-origin; fall back to the URL.
+      let name = deriveName(u)
+      const cd = res.headers.get('Content-Disposition')
+      const m = cd && /filename="?([^"]+)"?/i.exec(cd)
+      if (m) { try { name = decodeURIComponent(m[1]) } catch { name = m[1] } }
+      setFile(new File([blob], name, { type: blob.type || 'application/pdf' }))
+    } catch (e) {
+      setErr(`Kunne ikke laste ned filen: ${e.message}`)
+    } finally {
+      setFetching(false)
+    }
+  }
 
   const submit = async () => {
     setBusy(true); setErr('')
@@ -1036,15 +1082,55 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
           </div>
           <div style={{ marginBottom: 14, padding: '10px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8 }}>
             <div style={{ fontSize: 12, color: C.textMute, marginBottom: 8 }}>
-              Får serveren ikke hentet kilden (403)? Last ned filen og last den opp her i stedet — URL-en beholdes som kilde for sitatlenker.
+              Peker URL-en på en PDF/PPTX? Trykk «Last ned» — filen hentes via serveren og velges automatisk.
+              URL-en beholdes som kilde for sitatlenker.
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <button type="button" disabled={!meta.url}
-                onClick={() => meta.url && window.open(meta.url, '_blank', 'noopener')} style={btn.ghost}>Last ned ↗</button>
-              <input type="file" accept=".pdf,.pptx,.ppt"
-                onChange={e => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13, fontFamily: 'inherit' }} />
-              {file && <span style={{ fontSize: 12, color: C.accent }}>Lastes opp som fil: {file.name}</span>}
-            </div>
+            <details style={{ marginBottom: 8 }}>
+              <summary style={{ fontSize: 12, color: C.textMute, cursor: 'pointer' }}>
+                Får serveren ikke hentet kilden (403)? Slik laster du ned og opp manuelt
+              </summary>
+              <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: C.textMute, lineHeight: 1.6 }}>
+                <li>La URL-en stå i feltet over — den beholdes som <code>kilde_url</code> for sitatlenker.</li>
+                <li>Åpne URL-en i nettleseren din og lagre PDF-en til disk (Ctrl/Cmd+S).</li>
+                <li>Velg den lagrede fila med «velg fil» nedenfor.</li>
+                <li>Fyll inn metadata og trykk «Legg til».</li>
+                <li>Kjør «Regenerer» for indeksen etterpå.</li>
+              </ol>
+            </details>
+            {file ? (
+              // A file is ready (fetched or manually chosen) — only "Legg til"
+              // remains, so hide the download/pick controls and just confirm it.
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 13, color: C.accent, fontWeight: 500 }}>✓ Klar til å legges til: {file.name}</span>
+                <button type="button" onClick={() => setFile(null)} style={{ ...btn.ghost, fontSize: 12, padding: '4px 10px' }}>
+                  Fjern
+                </button>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  {(() => {
+                    const isDocUrl = urlLooksLikeDoc((meta.url || '').trim())
+                    const disabled = !isDocUrl || fetching
+                    return (
+                      <button type="button" disabled={disabled}
+                        onClick={fetchUrlAsFile}
+                        title={isDocUrl ? 'Hent filen via serveren' : 'URL-en må peke direkte på en .pdf-, .pptx- eller .ppt-fil'}
+                        style={{ ...btn.ghost, ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+                        {fetching ? 'Laster ned…' : 'Last ned'}
+                      </button>
+                    )
+                  })()}
+                  <input type="file" accept=".pdf,.pptx,.ppt"
+                    onChange={e => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13, fontFamily: 'inherit' }} />
+                </div>
+                {meta.url && !urlLooksLikeDoc(meta.url.trim()) && (
+                  <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>
+                    «Last ned» er kun tilgjengelig når URL-en peker direkte på en .pdf-, .pptx- eller .ppt-fil. Bruk den manuelle fremgangsmåten over for andre kilder.
+                  </div>
+                )}
+              </>
+            )}
           </div>
         </>
       )}
