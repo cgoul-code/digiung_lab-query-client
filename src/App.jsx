@@ -830,17 +830,48 @@ function entrySource(entry) {
   return '—'
 }
 
-function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged }) {
-  const [editing, setEditing] = useState(false)
+function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged, editingKey, setEditingKey }) {
   const [draft, setDraft] = useState(entry)
   const [busy, setBusy] = useState(false)
+  const [deriving, setDeriving] = useState(false)
   const [err, setErr] = useState('')
   const replaceInputRef = useRef(null)
 
   const key = entryKey(entry)
+  // Only one row edits at a time — driven by the parent's editingKey.
+  const editing = editingKey === key
 
-  const startEdit = () => { setDraft(entry); setEditing(true); setErr('') }
-  const cancel    = () => { setEditing(false); setErr('') }
+  const startEdit = () => { setDraft(entry); setEditingKey(key); setErr('') }
+  const cancel    = () => { setEditingKey(null); setErr('') }
+
+  // Derive metadata from the already-stored document (file or URL) and fill in
+  // only the empty draft fields — never clobber what's already entered.
+  const deriveMetadata = async () => {
+    setDeriving(true); setErr('')
+    try {
+      const url = `${server.replace(/\/$/, '')}/admin/derive-metadata`
+      const res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ index_name: indexName, key }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      const m = data.metadata || {}
+      setDraft(prev => {
+        const next = { ...prev }
+        for (const f of ADMIN_FIELDS) {
+          const v = m[f.key]
+          const empty = next[f.key] == null || next[f.key] === ''
+          if (v != null && v !== '' && empty) next[f.key] = v
+        }
+        return next
+      })
+    } catch (e) {
+      setErr(`Kunne ikke avlede metadata: ${e.message}`)
+    } finally {
+      setDeriving(false)
+    }
+  }
 
   // Replace a URL entry (e.g. one the server can't fetch because of a 403) with
   // an uploaded local copy. The backend carries over metadata and keeps the
@@ -871,7 +902,7 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || res.statusText)
-      setEditing(false)
+      setEditingKey(null)
       onSaved(data.entry)
     } catch (e) { setErr(e.message) }
     finally { setBusy(false) }
@@ -939,9 +970,19 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
                   </div>
                 ))}
               </div>
+              {deriving && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: C.accent }}>
+                  <LoadingDots /> Avleder metadata med AI…
+                </div>
+              )}
               {err && <div style={{ fontSize: 12, color: C.danger, marginTop: 8 }}>{err}</div>}
               <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <button onClick={save}   disabled={busy} style={btn.primary}>{busy ? 'Lagrer…' : 'Lagre'}</button>
+                <button onClick={deriveMetadata} disabled={busy || deriving}
+                  title="Les dokumentet og fyll ut tomme metadatafelt med AI"
+                  style={{ ...btn.ghost, ...(busy || deriving ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+                  {deriving ? 'Avleder…' : 'Avled metadata'}
+                </button>
+                <button onClick={save}   disabled={busy || deriving} style={btn.primary}>{busy ? 'Lagrer…' : 'Lagre'}</button>
                 <button onClick={cancel} disabled={busy} style={btn.ghost}>Avbryt</button>
               </div>
             </div>
@@ -958,7 +999,10 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
   const [meta, setMeta] = useState({})
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [fetchErr, setFetchErr] = useState('')     // download error, shown under the URL field
+  const [fetchBlocked, setFetchBlocked] = useState(false)  // upstream refused (403) → show manual steps
   const [fetching, setFetching] = useState(false)  // downloading the URL server-side
+  const [deriving, setDeriving] = useState(false)  // LLM deriving metadata from the file
 
   // Best-effort filename from a document URL; falls back to document.pdf.
   const deriveName = (u) => {
@@ -982,13 +1026,17 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
   const fetchUrlAsFile = async () => {
     const u = (meta.url || '').trim()
     if (!u) return
-    setFetching(true); setErr('')
+    setFetching(true); setFetchErr(''); setFetchBlocked(false)
     try {
       const base = server.replace(/\/$/, '')
       const res = await fetch(`${base}/admin/fetch-url?url=${encodeURIComponent(u)}`)
       if (!res.ok) {
         let msg = res.statusText
-        try { msg = (await res.json()).error || msg } catch { /* non-JSON error */ }
+        try {
+          const d = await res.json()
+          msg = d.error || msg
+          if (d.blocked || res.status === 403) setFetchBlocked(true)
+        } catch { /* non-JSON error */ }
         throw new Error(msg)
       }
       const blob = await res.blob()
@@ -999,13 +1047,43 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
       if (m) { try { name = decodeURIComponent(m[1]) } catch { name = m[1] } }
       setFile(new File([blob], name, { type: blob.type || 'application/pdf' }))
     } catch (e) {
-      setErr(`Kunne ikke laste ned filen: ${e.message}`)
+      setFetchErr(`Kunne ikke laste ned filen: ${e.message}`)
     } finally {
       setFetching(false)
     }
   }
 
-  const submit = async () => {
+  // Ask the server to read the document and derive metadata via the LLM, then
+  // pre-fill *empty* form fields only — never clobber what the user already typed.
+  // Triggered explicitly by the "Avled metadata" button.
+  const deriveMetadata = async (selFile) => {
+    if (!selFile) return
+    setDeriving(true); setErr('')
+    try {
+      const base = server.replace(/\/$/, '')
+      const fd = new FormData()
+      fd.append('file', selFile)
+      const res = await fetch(`${base}/admin/derive-metadata`, { method: 'POST', body: fd })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      const m = data.metadata || {}
+      setMeta(prev => {
+        const next = { ...prev }
+        for (const f of ADMIN_FIELDS) {
+          const v = m[f.key]
+          const empty = next[f.key] == null || next[f.key] === ''
+          if (v != null && v !== '' && empty) next[f.key] = v
+        }
+        return next
+      })
+    } catch (e) {
+      setErr(`Kunne ikke avlede metadata automatisk: ${e.message}`)
+    } finally {
+      setDeriving(false)
+    }
+  }
+
+  const submit = async (overwrite = false) => {
     setBusy(true); setErr('')
     try {
       const base = server.replace(/\/$/, '')
@@ -1025,16 +1103,30 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
           if (v != null && v !== '') fd.append(f.key, String(v))
         })
         if (effKildeUrl) fd.append('kilde_url', effKildeUrl)
+        if (overwrite) fd.append('overwrite', 'true')
         res = await fetch(url, { method: 'POST', body: fd })
       } else {
         if (!meta.url) throw new Error('URL er påkrevd')
         res = await fetch(url, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...meta, method: meta.method || 'GET' }),
+          body: JSON.stringify({ ...meta, method: meta.method || 'GET', overwrite }),
         })
       }
       const data = await res.json()
-      if (!res.ok) throw new Error(data.error || res.statusText)
+      if (!res.ok) {
+        // The entry already exists — offer to overwrite instead of dead-ending.
+        if (res.status === 409 && !overwrite) {
+          const ok = window.confirm(
+            `«${data.conflict_key || 'Oppføringen'}» finnes allerede i indeksen.\n\n` +
+            `Vil du overskrive den eksisterende oppføringen? ` +
+            `Filen på serveren er allerede oppdatert; metadata erstattes (tomme felt beholdes fra den gamle oppføringen).`
+          )
+          if (ok) return submit(true)   // retry with overwrite
+          setBusy(false)
+          return
+        }
+        throw new Error(data.error || res.statusText)
+      }
       onAdded(data.entry)
       onClose()
     } catch (e) { setErr(e.message) }
@@ -1072,7 +1164,8 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
             <div>
               <label style={{ display: 'block', fontSize: 11, color: C.textMute, marginBottom: 4, fontWeight: 500 }}>URL</label>
               <input type="url" value={meta.url || ''} placeholder="https://…"
-                onChange={e => setMeta({ ...meta, url: e.target.value })} style={inp.text} />
+                onChange={e => { setMeta({ ...meta, url: e.target.value }); setFetchErr(''); setFetchBlocked(false) }} style={inp.text} />
+              {fetchErr && <div style={{ fontSize: 12, color: C.danger, marginTop: 6 }}>{fetchErr}</div>}
             </div>
             <div>
               <label style={{ display: 'block', fontSize: 11, color: C.textMute, marginBottom: 4, fontWeight: 500 }}>Method</label>
@@ -1085,18 +1178,20 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
               Peker URL-en på en PDF/PPTX? Trykk «Last ned» — filen hentes via serveren og velges automatisk.
               URL-en beholdes som kilde for sitatlenker.
             </div>
-            <details style={{ marginBottom: 8 }}>
-              <summary style={{ fontSize: 12, color: C.textMute, cursor: 'pointer' }}>
-                Får serveren ikke hentet kilden (403)? Slik laster du ned og opp manuelt
-              </summary>
-              <ol style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: C.textMute, lineHeight: 1.6 }}>
-                <li>La URL-en stå i feltet over — den beholdes som <code>kilde_url</code> for sitatlenker.</li>
-                <li>Åpne URL-en i nettleseren din og lagre PDF-en til disk (Ctrl/Cmd+S).</li>
-                <li>Velg den lagrede fila med «velg fil» nedenfor.</li>
-                <li>Fyll inn metadata og trykk «Legg til».</li>
-                <li>Kjør «Regenerer» for indeksen etterpå.</li>
-              </ol>
-            </details>
+            {fetchBlocked && (
+              <div style={{ marginBottom: 8, padding: '8px 10px', background: C.dangerBg, border: `1px solid ${C.border}`, borderRadius: 6 }}>
+                <div style={{ fontSize: 12, color: C.text, fontWeight: 600, marginBottom: 4 }}>
+                  Serveren fikk ikke hentet kilden (403). Slik laster du ned og opp manuelt:
+                </div>
+                <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: C.textMute, lineHeight: 1.6 }}>
+                  <li>La URL-en stå i feltet over — den beholdes som <code>kilde_url</code> for sitatlenker.</li>
+                  <li>Åpne URL-en i nettleseren din og lagre PDF-en til disk (Ctrl/Cmd+S).</li>
+                  <li>Velg den lagrede fila med «velg fil» nedenfor.</li>
+                  <li>Fyll inn metadata og trykk «Legg til».</li>
+                  <li>Kjør «Regenerer» for indeksen etterpå.</li>
+                </ol>
+              </div>
+            )}
             {file ? (
               // A file is ready (fetched or manually chosen) — only "Legg til"
               // remains, so hide the download/pick controls and just confirm it.
@@ -1126,13 +1221,19 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
                 </div>
                 {meta.url && !urlLooksLikeDoc(meta.url.trim()) && (
                   <div style={{ fontSize: 11, color: C.textFaint, marginTop: 6 }}>
-                    «Last ned» er kun tilgjengelig når URL-en peker direkte på en .pdf-, .pptx- eller .ppt-fil. Bruk den manuelle fremgangsmåten over for andre kilder.
+                    «Last ned» er kun tilgjengelig når URL-en peker direkte på en .pdf-, .pptx- eller .ppt-fil. For andre kilder: åpne URL-en i nettleseren, lagre fila, og velg den med «velg fil».
                   </div>
                 )}
               </>
             )}
           </div>
         </>
+      )}
+
+      {deriving && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, fontSize: 12, color: C.accent }}>
+          <LoadingDots /> Avleder metadata med AI fra «{file?.name}»…
+        </div>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }}>
@@ -1154,7 +1255,17 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
       {err && <div style={{ fontSize: 12, color: C.danger, marginTop: 10 }}>{err}</div>}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-        <button onClick={submit} disabled={busy} style={btn.primary}>{busy ? 'Sender…' : 'Legg til'}</button>
+        {(() => {
+          const canDerive = !!file && !deriving && !busy
+          return (
+            <button type="button" onClick={() => deriveMetadata(file)} disabled={!canDerive}
+              title={file ? 'Les dokumentet og fyll ut tomme metadatafelt med AI' : 'Velg eller last ned en fil først'}
+              style={{ ...btn.ghost, ...(canDerive ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
+              {deriving ? 'Avleder…' : 'Avled metadata'}
+            </button>
+          )
+        })()}
+        <button onClick={() => submit()} disabled={busy || deriving} style={{ ...btn.primary, ...(busy || deriving ? { opacity: 0.6 } : {}) }}>{busy ? 'Sender…' : 'Legg til'}</button>
         <button onClick={onClose} disabled={busy} style={btn.ghost}>Avbryt</button>
       </div>
     </div>
@@ -1658,6 +1769,8 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
   const [adding, setAdding] = useState(false)
+  // Key of the single row currently in edit mode (only one at a time).
+  const [editingKey, setEditingKey] = useState(null)
   const [creatingIndex, setCreatingIndex] = useState(false)
   const [newIndexName, setNewIndexName] = useState('')
   const [createBusy, setCreateBusy] = useState(false)
@@ -1831,7 +1944,8 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
               {entries.map((entry, i) => (
                 <AdminEntryRow key={entryKey(entry) || i}
                   entry={entry} server={server} indexName={indexName}
-                  onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load} />
+                  onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load}
+                  editingKey={editingKey} setEditingKey={setEditingKey} />
               ))}
             </tbody>
           </table>

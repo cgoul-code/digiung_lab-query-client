@@ -4,6 +4,9 @@
       "Bash(npx eslint *)",
       "Bash(npx vite *)",
       "Bash(timeout 5 cat C:\\\\Users\\\\CHRIST~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-ChristianGoulignac-vscode-llama-digiung-lab-query-client\\\\088ccce1-6d77-4a22-a64d-6cce92b8654d\\\\tasks\\\\boqr4p7rl.output)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\ChristianGoulignac\\vscode\\llama\\digiung_lab-query_server"
     ]
   }
 }
