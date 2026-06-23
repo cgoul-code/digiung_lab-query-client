@@ -32,9 +32,23 @@ const QUERY_TYPES = [
   { key: 'strategisk_risiko', label: 'Strategisk risiko', description: 'Analysekjede per dokument: driver → sårbarhet → konsekvens → risiko', indexes: ['Strategisk_risiko'] },
 ]
 
-function queryTypesForIndex(indexName) {
+// An admin can pin an explicit set of analysetyper to an index at creation time
+// (persisted server-side as { indexName: [keys] }). When such a list exists it
+// wins; otherwise we fall back to each type's built-in `indexes` restriction.
+function queryTypesForIndex(indexName, overrideMap) {
+  const keys = overrideMap?.[indexName]
+  if (Array.isArray(keys)) {
+    const wanted = new Set(keys)
+    const picked = QUERY_TYPES.filter(qt => wanted.has(qt.key))
+    // Never leave an index with no analysetype to run.
+    return picked.length ? picked : QUERY_TYPES.filter(qt => qt.key === 'free')
+  }
   return QUERY_TYPES.filter(qt => !qt.indexes?.length || qt.indexes.includes(indexName))
 }
+
+// Analysetyper available everywhere (no `indexes` restriction). Used as the
+// default selection when creating a new index.
+const DEFAULT_QUERY_TYPE_KEYS = QUERY_TYPES.filter(qt => !qt.indexes?.length).map(qt => qt.key)
 
 // query_type values that produce the structured analysekjede output.
 const STRUCTURED_OUTPUT_KEYS = {
@@ -148,6 +162,46 @@ const THEME_STORAGE_KEY = 'digiung_lab.theme'
 const INDEX_STORAGE_KEY = 'digiung_lab.index'
 const MODE_STORAGE_KEY = 'digiung_lab.mode'
 const QUERYTYPE_STORAGE_KEY = 'digiung_lab.queryType'
+const HISTORY_STORAGE_KEY = 'digiung_lab.history'
+const SIDEBAR_STORAGE_KEY = 'digiung_lab.sidebarOpen'
+const HISTORY_MAX = 40
+
+// ── Conversation log persistence ──────────────────────────────────────────────
+// No backend user system exists, so "follows the user" = persisted in this
+// browser's localStorage. Full results are stored so a conversation reopens
+// instantly; on quota overflow we trim the oldest entries and retry.
+// localStorage key is namespaced per signed-in user so multiple users on a
+// shared browser don't see each other's log; null = anonymous/auth-off.
+function historyKey(user) { return user ? `${HISTORY_STORAGE_KEY}.${user}` : HISTORY_STORAGE_KEY }
+function loadHistory(user) {
+  try {
+    const arr = JSON.parse(window.localStorage.getItem(historyKey(user)) || '[]')
+    return Array.isArray(arr) ? arr : []
+  } catch { return [] }
+}
+function persistHistory(list, user) {
+  let arr = list.slice(0, HISTORY_MAX)
+  while (arr.length) {
+    try { window.localStorage.setItem(historyKey(user), JSON.stringify(arr)); return arr }
+    catch { arr = arr.slice(0, Math.max(0, arr.length - 3)) }  // drop oldest, retry
+  }
+  try { window.localStorage.removeItem(historyKey(user)) } catch { /* ignore */ }
+  return arr
+}
+function conversationTitle(entry) {
+  if (entry.question && entry.question.trim()) return entry.question.trim()
+  const qt = QUERY_TYPES.find(q => q.key === entry.queryType)
+  if (qt) return qt.label
+  return entry.mode === 'query' ? 'Dokumentsøk' : 'Analyse'
+}
+function relTime(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000)
+  if (s < 60) return 'nå nettopp'
+  const m = Math.floor(s / 60); if (m < 60) return `${m} min siden`
+  const h = Math.floor(m / 60); if (h < 24) return `${h} t siden`
+  const d = Math.floor(h / 24); if (d < 7) return `${d} d siden`
+  return new Date(ts).toLocaleDateString('nb-NO', { day: 'numeric', month: 'short' })
+}
 
 // Mutable palette objects — components reference these by name and read fresh
 // values on every render, so mutating in place updates the whole UI on theme switch.
@@ -853,6 +907,8 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                 {entry.url && (
                   <>
+                    <button onClick={() => window.open(entry.url, '_blank', 'noopener')} disabled={busy} style={btn.ghost}
+                      title="Åpne/last ned kilden i nettleseren">Last ned ↗</button>
                     <input ref={replaceInputRef} type="file" accept=".pdf,.pptx,.ppt" style={{ display: 'none' }}
                       onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; replaceWithFile(f) }} />
                     <button onClick={() => replaceInputRef.current?.click()} disabled={busy} style={btn.ghost}
@@ -909,14 +965,20 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
       const base = server.replace(/\/$/, '')
       const url = `${base}/admin/entries?index_name=${encodeURIComponent(indexName)}`
       let res
-      if (tab === 'file') {
+      // File upload when on the file tab, OR on the URL tab if the user attached a
+      // downloaded copy (for sources the server can't fetch, e.g. regjeringen 403).
+      if (tab === 'file' || (tab === 'url' && file)) {
         if (!file) throw new Error('Velg en fil')
+        // On the URL tab, keep the entered URL as kilde_url for citation links.
+        const effKildeUrl = (tab === 'url') ? (meta.kilde_url || meta.url || '') : (meta.kilde_url || '')
         const fd = new FormData()
         fd.append('file', file)
         ADMIN_FIELDS.forEach(f => {
+          if (f.key === 'kilde_url') return
           const v = meta[f.key]
           if (v != null && v !== '') fd.append(f.key, String(v))
         })
+        if (effKildeUrl) fd.append('kilde_url', effKildeUrl)
         res = await fetch(url, { method: 'POST', body: fd })
       } else {
         if (!meta.url) throw new Error('URL er påkrevd')
@@ -959,18 +1021,32 @@ function AddEntryForm({ server, indexName, onAdded, onClose }) {
         </div>
       )}
       {tab === 'url' && (
-        <div style={{ marginBottom: 14, display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 10 }}>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, color: C.textMute, marginBottom: 4, fontWeight: 500 }}>URL</label>
-            <input type="url" value={meta.url || ''} placeholder="https://…"
-              onChange={e => setMeta({ ...meta, url: e.target.value })} style={inp.text} />
+        <>
+          <div style={{ marginBottom: 14, display: 'grid', gridTemplateColumns: '3fr 1fr', gap: 10 }}>
+            <div>
+              <label style={{ display: 'block', fontSize: 11, color: C.textMute, marginBottom: 4, fontWeight: 500 }}>URL</label>
+              <input type="url" value={meta.url || ''} placeholder="https://…"
+                onChange={e => setMeta({ ...meta, url: e.target.value })} style={inp.text} />
+            </div>
+            <div>
+              <label style={{ display: 'block', fontSize: 11, color: C.textMute, marginBottom: 4, fontWeight: 500 }}>Method</label>
+              <input type="text" value={meta.method || 'GET'}
+                onChange={e => setMeta({ ...meta, method: e.target.value })} style={inp.text} />
+            </div>
           </div>
-          <div>
-            <label style={{ display: 'block', fontSize: 11, color: C.textMute, marginBottom: 4, fontWeight: 500 }}>Method</label>
-            <input type="text" value={meta.method || 'GET'}
-              onChange={e => setMeta({ ...meta, method: e.target.value })} style={inp.text} />
+          <div style={{ marginBottom: 14, padding: '10px 12px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8 }}>
+            <div style={{ fontSize: 12, color: C.textMute, marginBottom: 8 }}>
+              Får serveren ikke hentet kilden (403)? Last ned filen og last den opp her i stedet — URL-en beholdes som kilde for sitatlenker.
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <button type="button" disabled={!meta.url}
+                onClick={() => meta.url && window.open(meta.url, '_blank', 'noopener')} style={btn.ghost}>Last ned ↗</button>
+              <input type="file" accept=".pdf,.pptx,.ppt"
+                onChange={e => setFile(e.target.files?.[0] || null)} style={{ fontSize: 13, fontFamily: 'inherit' }} />
+              {file && <span style={{ fontSize: 12, color: C.accent }}>Lastes opp som fil: {file.name}</span>}
+            </div>
           </div>
-        </div>
+        </>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }}>
@@ -1120,9 +1196,29 @@ function ReindexPanel({ server, indexName }) {
   const latestProgress = [...events].reverse().find(e => typeof e.index === 'number')
   const doneEvt = events.find(e => e.event === 'done')
   const total = startEvt?.total ?? latestProgress?.total ?? 0
-  const current = latestProgress ? latestProgress.index + 1 : 0
+  // Count only *completed* documents (terminal per-doc events), not started ones —
+  // otherwise the bar jumps to 100% the moment the last/heaviest doc *begins*.
+  const completedCount = events.filter(e =>
+    e.event === 'doc_done' || e.event === 'doc_failed' ||
+    e.event === 'doc_skipped' || e.event === 'skip'
+  ).length
+  const current = total > 0 ? Math.min(completedCount, total) : completedCount
   const remaining = Math.max(0, total - current)
-  const pct = total > 0 ? Math.round((current / total) * 100) : 0
+  // A doc_start without a matching terminal event means that document is still
+  // being processed right now.
+  const lastStart = [...events].reverse().find(e => e.event === 'doc_start')
+  const docInFlight = lastStart && completedCount <= (lastStart.index ?? 0)
+  // Finalizing: every document is accounted for but the job hasn't emitted the
+  // terminal 'done' yet (server is reloading the index + uploading to blob).
+  const finalizing = job?.status === 'running' && total > 0 && current >= total
+  // Newest post-processing message to show during the finalizing tail.
+  const finalizingMsg = [...events].reverse().find(e =>
+    ['reload', 'blob_upload', 'synced', 'cleared'].includes(e.event) && e.message
+  )?.message
+  // Hold the bar just under full during finalizing so 100% means "truly done".
+  const pct = total > 0
+    ? (finalizing ? 99 : Math.round((current / total) * 100))
+    : 0
   const docEvents = events.filter(e =>
     e.event === 'doc_done' || e.event === 'doc_failed' ||
     e.event === 'doc_skipped' || e.event === 'skip'
@@ -1190,7 +1286,7 @@ function ReindexPanel({ server, indexName }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => start('incremental')} disabled={busy} style={btn.primary}>
-            {busy ? 'Kjører…' : 'Regenerer manglende'}
+            {busy ? <>Kjører<LoadingDots /></> : 'Regenerer manglende'}
           </button>
           <button onClick={() => start('full')} disabled={busy} style={btn.ghost}>
             Regenerer alt
@@ -1222,29 +1318,44 @@ function ReindexPanel({ server, indexName }) {
               </div>
 
               <div style={{ height: 12, background: C.border, borderRadius: 99, overflow: 'hidden', marginBottom: 12 }}>
-                <div style={{
-                  height: '100%',
-                  width: `${pct}%`,
-                  background: `linear-gradient(90deg, ${C.accent}, #60A5FA)`,
-                  borderRadius: 99,
-                  transition: 'width .4s ease-out',
-                  minWidth: pct > 0 ? 8 : 0,
-                }} />
+                <div
+                  className={finalizing ? 'reindex-bar-indeterminate' : undefined}
+                  style={{
+                    height: '100%',
+                    width: `${pct}%`,
+                    background: `linear-gradient(90deg, ${C.accent}, #60A5FA)`,
+                    borderRadius: 99,
+                    transition: 'width .4s ease-out',
+                    minWidth: pct > 0 ? 8 : 0,
+                  }}
+                />
               </div>
 
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, marginBottom: latestProgress?.tittel ? 8 : 0 }}>
-                <span style={{ color: C.text }}>
-                  <strong style={{ color: remaining > 0 ? C.accent : C.success }}>{remaining}</strong> gjenstår
-                </span>
-                {etaMs != null && remaining > 0 && (
-                  <span style={{ color: C.textMute }}>{fmtDur(etaMs)} igjen</span>
-                )}
-              </div>
-
-              {latestProgress?.tittel && (
-                <div style={{ fontSize: 12, color: C.textFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  Behandler: {latestProgress.tittel}
+              {finalizing ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: C.textMute }}>
+                  <LoadingDots />
+                  <span>Fullfører — lagrer og laster opp indeks{finalizingMsg ? ` (${finalizingMsg})` : '…'}</span>
                 </div>
+              ) : (
+                <>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, fontSize: 13, marginBottom: docInFlight && lastStart?.tittel ? 8 : 0 }}>
+                    <span style={{ color: C.text }}>
+                      <strong style={{ color: remaining > 0 ? C.accent : C.success }}>{remaining}</strong> gjenstår
+                    </span>
+                    {etaMs != null && remaining > 0 && (
+                      <span style={{ color: C.textMute }}>{fmtDur(etaMs)} igjen</span>
+                    )}
+                  </div>
+
+                  {docInFlight && lastStart?.tittel && (
+                    <div style={{ fontSize: 12, color: C.textFaint, display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <LoadingDots />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        Behandler: {lastStart.tittel}
+                      </span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1375,6 +1486,88 @@ function ReindexPanel({ server, indexName }) {
   )
 }
 
+function QueryTypePicker({ selected, onToggle }) {
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, background: C.bg, marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: `1px solid ${C.border}` }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: C.textMute }}>
+          Analyser ({selected.size}/{QUERY_TYPES.length} valgt)
+        </span>
+      </div>
+      <div style={{ padding: 6 }}>
+        {QUERY_TYPES.map(qt => {
+          const on = selected.has(qt.key)
+          return (
+            <label key={qt.key} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', borderRadius: 6,
+              cursor: 'pointer', background: on ? C.accentBg : 'transparent',
+            }}>
+              <input type="checkbox" checked={on} onChange={() => onToggle(qt.key)} style={{ marginTop: 2 }} />
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ fontSize: 13, color: C.text }}>{qt.label}</span>
+                {qt.description && (
+                  <span style={{ display: 'block', fontSize: 11, color: C.textFaint }}>{qt.description}</span>
+                )}
+              </span>
+            </label>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function ReportPicker({ reports, selected, search, onSearch, onToggle, onSelectAll, onClear }) {
+  const q = search.trim().toLowerCase()
+  const filtered = (reports || []).filter(r =>
+    !q || (r.tittel || '').toLowerCase().includes(q) || (r.key || '').toLowerCase().includes(q))
+
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 8, background: C.bg, marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: `1px solid ${C.border}` }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: C.textMute }}>
+          Rapporter{reports ? ` (${selected.size}/${reports.length} valgt)` : ''}
+        </span>
+        <input value={search} onChange={e => onSearch(e.target.value)} placeholder="Søk i rapporter…"
+          style={{
+            flex: 1, padding: '5px 8px', fontSize: 12, fontFamily: 'inherit',
+            border: `1px solid ${C.border}`, borderRadius: 6, background: C.surface, color: C.text,
+          }} />
+        <button type="button" onClick={() => onSelectAll(filtered.map(r => r.key))} style={btn.ghost}>Velg alle</button>
+        <button type="button" onClick={onClear} style={btn.ghost}>Fjern alle</button>
+      </div>
+      <div style={{ maxHeight: 260, overflowY: 'auto', padding: 6 }}>
+        {reports == null ? (
+          <div style={{ fontSize: 12, color: C.textFaint, padding: '10px 6px' }}>Laster rapporter…</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.textFaint, padding: '10px 6px' }}>
+            {reports.length === 0 ? 'Ingen eksisterende rapporter ennå.' : 'Ingen treff.'}
+          </div>
+        ) : filtered.map(r => {
+          const on = selected.has(r.key)
+          return (
+            <label key={r.key} style={{
+              display: 'flex', alignItems: 'flex-start', gap: 8, padding: '6px 8px', borderRadius: 6,
+              cursor: 'pointer', background: on ? C.accentBg : 'transparent',
+            }}>
+              <input type="checkbox" checked={on} onChange={() => onToggle(r.key)} style={{ marginTop: 2 }} />
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Tag tone={r.kind === 'url' ? 'accent' : 'neutral'}>{r.kind === 'url' ? 'URL' : 'FIL'}</Tag>
+                  <span style={{ fontSize: 13, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {r.tittel || r.key}
+                  </span>
+                </span>
+                <span style={{ fontSize: 11, color: C.textFaint }}>i: {(r.indexes || []).join(', ')}</span>
+              </span>
+            </label>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
@@ -1383,6 +1576,27 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
   const [newIndexName, setNewIndexName] = useState('')
   const [createBusy, setCreateBusy] = useState(false)
   const [createErr, setCreateErr] = useState('')
+  // Existing reports the new index can be seeded from.
+  const [allReports, setAllReports] = useState(null)
+  const [selectedKeys, setSelectedKeys] = useState(() => new Set())
+  const [reportSearch, setReportSearch] = useState('')
+  // Which analysetyper (query types) the new index should expose. Defaults to the
+  // always-available common types (no `indexes` restriction, i.e. «Fri analyse»).
+  const [selectedQTs, setSelectedQTs] = useState(() => new Set(DEFAULT_QUERY_TYPE_KEYS))
+
+  // Load the catalogue of existing reports when the create-index form opens.
+  useEffect(() => {
+    if (!creatingIndex) return
+    let cancelled = false
+    setAllReports(null); setSelectedKeys(new Set()); setReportSearch('')
+    setSelectedQTs(new Set(DEFAULT_QUERY_TYPE_KEYS))
+    const base = server.replace(/\/$/, '')
+    fetch(`${base}/admin/reports`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(d => { if (!cancelled) setAllReports(d.reports || []) })
+      .catch(() => { if (!cancelled) setAllReports([]) })
+    return () => { cancelled = true }
+  }, [creatingIndex, server])
 
   const submitNewIndex = async (e) => {
     e?.preventDefault?.()
@@ -1395,7 +1609,12 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
     setCreateBusy(true); setCreateErr('')
     try {
       const base = server.replace(/\/$/, '')
-      const res  = await fetch(`${base}/admin/indexes?name=${encodeURIComponent(name)}`, { method: 'POST' })
+      const chosen = (allReports || []).filter(r => selectedKeys.has(r.key)).map(r => r.entry)
+      const query_types = QUERY_TYPES.filter(qt => selectedQTs.has(qt.key)).map(qt => qt.key)
+      const res  = await fetch(`${base}/admin/indexes`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, entries: chosen, query_types }),
+      })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || res.statusText)
       onIndexCreated?.(name)
@@ -1445,7 +1664,8 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
         <form onSubmit={submitNewIndex} style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 8 }}>Ny indeks</div>
           <div style={{ fontSize: 12, color: C.textMute, marginBottom: 10 }}>
-            Indeksen opprettes som en tom liste i document_store.json. Legg til dokumenter etterpå med «+ Legg til rapport».
+            Gi indeksen et navn, velg hvilke analyser den skal tilby, og eventuelt
+            rapporter den skal inneholde fra eksisterende rapporter. Bygg indeksen med «Regenerer» etterpå.
           </div>
           <input
             autoFocus
@@ -1456,12 +1676,40 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
             style={{
               width: '100%', padding: '8px 10px', fontSize: 13, fontFamily: 'inherit',
               border: `1px solid ${C.border}`, borderRadius: 6, background: C.surface, color: C.text,
-              marginBottom: 8,
+              marginBottom: 12,
             }}
           />
-          {createErr && <div style={{ fontSize: 12, color: C.danger, marginBottom: 8 }}>{createErr}</div>}
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button type="submit" disabled={createBusy} style={btn.primary}>{createBusy ? 'Oppretter…' : 'Opprett'}</button>
+
+          {/* Pick which analysetyper this index should expose */}
+          <QueryTypePicker
+            selected={selectedQTs}
+            onToggle={(key) => setSelectedQTs(prev => {
+              const next = new Set(prev)
+              if (next.has(key)) next.delete(key); else next.add(key)
+              return next
+            })}
+          />
+
+          {/* Pick existing reports to seed the index with */}
+          <ReportPicker
+            reports={allReports}
+            selected={selectedKeys}
+            search={reportSearch}
+            onSearch={setReportSearch}
+            onToggle={(key) => setSelectedKeys(prev => {
+              const next = new Set(prev)
+              if (next.has(key)) next.delete(key); else next.add(key)
+              return next
+            })}
+            onSelectAll={(keys) => setSelectedKeys(new Set(keys))}
+            onClear={() => setSelectedKeys(new Set())}
+          />
+
+          {createErr && <div style={{ fontSize: 12, color: C.danger, margin: '8px 0' }}>{createErr}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button type="submit" disabled={createBusy} style={btn.primary}>
+              {createBusy ? 'Oppretter…' : (selectedKeys.size ? `Opprett med ${selectedKeys.size} rapport(er)` : 'Opprett')}
+            </button>
             <button type="button" onClick={() => setCreatingIndex(false)} disabled={createBusy} style={btn.ghost}>Avbryt</button>
           </div>
         </form>
@@ -1561,6 +1809,105 @@ function EmptyState({ mode, indexName, onPick }) {
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
+const SIDEBAR_TOP = 61  // height of the sticky top bar
+
+function ConversationSidebar({ open, onToggle, history, activeId, onSelect, onDelete, onClear, user }) {
+  const frame = {
+    position: 'sticky', top: SIDEBAR_TOP, alignSelf: 'flex-start',
+    height: `calc(100vh - ${SIDEBAR_TOP}px)`,
+    borderRight: `1px solid ${C.border}`, background: C.surface,
+    display: 'flex', flexDirection: 'column', flexShrink: 0,
+  }
+
+  if (!open) {
+    return (
+      <div style={{ ...frame, width: 40, alignItems: 'center', padding: '10px 0' }}>
+        <button onClick={onToggle} title="Vis samtalelogg" style={{
+          border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+          borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1,
+        }}>›</button>
+        <div style={{
+          writingMode: 'vertical-rl', marginTop: 12, fontSize: 11, letterSpacing: '.08em',
+          textTransform: 'uppercase', color: C.textFaint, userSelect: 'none',
+        }}>Samtalelogg{history.length ? ` · ${history.length}` : ''}</div>
+      </div>
+    )
+  }
+
+  return (
+    <aside style={{ ...frame, width: 280, overflow: 'hidden' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 12px', borderBottom: `1px solid ${C.border}`,
+      }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Samtalelogg</div>
+          <div style={{ fontSize: 11, color: C.textFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 210 }}
+            title={user ? `Logget inn som ${user} — loggen følger deg på tvers av enheter` : 'Ikke innlogget — loggen lagres kun i denne nettleseren'}>
+            {user ? `👤 ${user}` : 'Kun denne nettleseren'}
+          </div>
+        </div>
+        <button onClick={onToggle} title="Skjul panel" style={{
+          border: 'none', background: 'transparent', color: C.textMute,
+          cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 4,
+        }}>‹</button>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+        {history.length === 0 ? (
+          <div style={{ fontSize: 12, color: C.textFaint, padding: '12px 8px', lineHeight: 1.5 }}>
+            Ingen samtaler ennå. Søk eller kjør en analyse, så dukker den opp her.
+          </div>
+        ) : history.map(entry => {
+          const active = entry.id === activeId
+          return (
+            <div key={entry.id} onClick={() => onSelect(entry)} title={conversationTitle(entry)}
+              style={{
+                position: 'relative', padding: '8px 26px 8px 10px', marginBottom: 4,
+                borderRadius: 8, cursor: 'pointer',
+                background: active ? C.accentBg : 'transparent',
+                border: `1px solid ${active ? C.accent : 'transparent'}`,
+              }}
+              onMouseEnter={e => { if (!active) e.currentTarget.style.background = C.bg }}
+              onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent' }}>
+              <div style={{
+                fontSize: 13, color: active ? C.accent : C.text, fontWeight: active ? 600 : 500,
+                lineHeight: 1.35, overflow: 'hidden', textOverflow: 'ellipsis',
+                display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              }}>{conversationTitle(entry)}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, fontSize: 11, color: C.textFaint }}>
+                <span style={{
+                  padding: '1px 6px', borderRadius: 99, background: C.bg, border: `1px solid ${C.border}`,
+                  maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>{entry.index || '—'}</span>
+                <span>{relTime(entry.ts)}</span>
+              </div>
+              <button onClick={e => { e.stopPropagation(); onDelete(entry.id) }} title="Slett samtale"
+                style={{
+                  position: 'absolute', top: 6, right: 6, width: 18, height: 18, padding: 0,
+                  border: 'none', background: 'transparent', color: C.textFaint,
+                  cursor: 'pointer', fontSize: 15, lineHeight: 1, borderRadius: 4,
+                }}
+                onMouseEnter={e => { e.currentTarget.style.color = C.danger }}
+                onMouseLeave={e => { e.currentTarget.style.color = C.textFaint }}>×</button>
+            </div>
+          )
+        })}
+      </div>
+
+      {history.length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.border}`, padding: '8px 12px' }}>
+          <button onClick={onClear} style={{
+            width: '100%', padding: '7px 10px', borderRadius: 8,
+            border: `1px solid ${C.border}`, background: C.bg, color: C.danger,
+            cursor: 'pointer', fontSize: 12, fontWeight: 600, fontFamily: 'inherit',
+          }}>Tøm hele loggen</button>
+        </div>
+      )}
+    </aside>
+  )
+}
+
 export default function App() {
   const [server, setServer]             = useState(webserverEndPoint)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -1580,6 +1927,105 @@ export default function App() {
     try { window.localStorage.setItem(THEME_STORAGE_KEY, themeName) } catch {}
   }, [themeName])
   const [view, setView]                 = useState('search')   // 'search' | 'admin'
+  // Conversation log (left panel). Identity comes from App Service Easy Auth via
+  // /me; when present the log is mirrored server-side (/history) so it follows the
+  // user across devices. Without identity it stays per-browser in localStorage.
+  const [currentUser, setCurrentUser]   = useState(null)
+  const userRef                         = useRef(null)
+  userRef.current = currentUser
+  const serverSyncRef                   = useRef(false)  // true only when the API sees our identity
+  const [history, setHistory]           = useState(() => loadHistory(null))
+  const [activeConvId, setActiveConvId] = useState(null)
+  const [sidebarOpen, setSidebarOpen]   = useState(() => {
+    try { return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) !== '0' } catch { return true }
+  })
+  useEffect(() => {
+    try { window.localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarOpen ? '1' : '0') } catch { /* ignore */ }
+  }, [sidebarOpen])
+
+  // Resolve identity, then load that user's log (server first, local cache fallback).
+  // Two possible identity sources:
+  //   1. API /me  — works when the App Service receives the principal (same origin
+  //      or a Static Web Apps linked backend). Enables cross-device server sync.
+  //   2. Static Web Apps /.auth/me — same origin as this SPA; gives the signed-in
+  //      user even when the API can't see it, but only for per-browser namespacing.
+  useEffect(() => {
+    const base = server.replace(/\/$/, '')
+    let cancelled = false
+    ;(async () => {
+      let user = null
+      let serverBacked = false
+      try {
+        const r = await fetch(`${base}/me`, { cache: 'no-store' })
+        if (r.ok) { const u = (await r.json()).user; if (u) { user = u; serverBacked = true } }
+      } catch { /* auth off or unreachable */ }
+      if (!user) {
+        try {
+          const r = await fetch('/.auth/me', { cache: 'no-store' })
+          if (r.ok) { const cp = (await r.json()).clientPrincipal; if (cp?.userDetails) user = cp.userDetails }
+        } catch { /* no SWA auth */ }
+      }
+      if (cancelled) return
+      userRef.current = user
+      serverSyncRef.current = serverBacked
+      setCurrentUser(user)
+      let list = loadHistory(user)
+      if (serverBacked) {
+        try {
+          const r = await fetch(`${base}/history`, { cache: 'no-store' })
+          if (r.ok) {
+            const srv = (await r.json()).history
+            if (Array.isArray(srv)) { list = srv; persistHistory(srv, user) }
+          }
+        } catch { /* keep local cache */ }
+      }
+      if (!cancelled) setHistory(list)
+    })()
+    return () => { cancelled = true }
+  }, [server])
+
+  // Mirror the full log to the server (fire-and-forget) — only when the API can
+  // actually attribute it to this user; otherwise it stays per-browser.
+  const syncServer = useCallback((list) => {
+    if (!serverSyncRef.current) return
+    const base = server.replace(/\/$/, '')
+    fetch(`${base}/history`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ history: list }),
+    }).catch(() => {})
+  }, [server])
+
+  const saveConversation = useCallback((entry) => {
+    setHistory(prev => {
+      const next = persistHistory([entry, ...prev.filter(c => c.id !== entry.id)], userRef.current)
+      syncServer(next)
+      return next
+    })
+    setActiveConvId(entry.id)
+  }, [syncServer])
+  const deleteConversation = useCallback((id) => {
+    setHistory(prev => {
+      const next = persistHistory(prev.filter(c => c.id !== id), userRef.current)
+      syncServer(next)
+      return next
+    })
+    setActiveConvId(cur => (cur === id ? null : cur))
+  }, [syncServer])
+  const clearHistory = useCallback(() => {
+    if (!window.confirm('Slette hele samtaleloggen?')) return
+    setHistory(() => { const next = persistHistory([], userRef.current); syncServer(next); return next })
+    setActiveConvId(null)
+  }, [syncServer])
+  const openConversation = useCallback((entry) => {
+    setView('search')
+    setResults(entry.result ? [entry.result] : [])
+    setActiveConvId(entry.id)
+    setQuestion(entry.question || '')
+    if (entry.mode) setMode(entry.mode)
+    if (entry.queryType) setQueryType(entry.queryType)
+    setStatus('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
   const [mode, setMode]                 = useState(() => {
     try { const s = window.localStorage.getItem(MODE_STORAGE_KEY); if (s === 'query' || s === 'aggregate') return s } catch {}
     return 'aggregate'
@@ -1596,6 +2042,7 @@ export default function App() {
   const cancelRef                       = useRef({ controller: null, jobId: null, cancelled: false })
   const [results, setResults]           = useState([])
   const [indexes, setIndexes]           = useState([])
+  const [indexQueryTypes, setIndexQueryTypes] = useState({})  // { indexName: [keys] }
   const [selectedIndex, setSelectedIndex] = useState('')
   const selectedIndexRef                = useRef('')
   const [options, setOptions]           = useState({})
@@ -1619,8 +2066,8 @@ export default function App() {
   // the currently selected index. Common types (no `indexes` list) are
   // available everywhere.
   const availableQueryTypes = useMemo(
-    () => queryTypesForIndex(selectedIndex),
-    [selectedIndex]
+    () => queryTypesForIndex(selectedIndex, indexQueryTypes),
+    [selectedIndex, indexQueryTypes]
   )
 
   // If the active query type isn't available for the new index, fall back to
@@ -1673,11 +2120,23 @@ export default function App() {
       .catch(() => {})
   }, [server])
 
+  // Per-index analysetype overrides ({ indexName: [keys] }); needed before we
+  // can decide which types a (newly created) index actually exposes.
+  const refreshIndexQueryTypes = useCallback(() => {
+    const base = server.replace(/\/$/, '')
+    return fetch(`${base}/admin/index-query-types`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(map => { const m = map && typeof map === 'object' ? map : {}; setIndexQueryTypes(m); return m })
+      .catch(() => ({}))
+  }, [server])
+
   useEffect(() => {
     const base = server.replace(/\/$/, '')
-    fetch(`${base}/indexes`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(list => {
+    Promise.all([
+      fetch(`${base}/indexes`).then(r => r.ok ? r.json() : Promise.reject()),
+      refreshIndexQueryTypes(),
+    ])
+      .then(([list, qtMap]) => {
         setIndexes(list)
         if (list.length && !selectedIndexRef.current) {
           // Restore the last-used index when it still exists, else default to first.
@@ -1687,14 +2146,14 @@ export default function App() {
           selectedIndexRef.current = initial
           setSelectedIndex(initial)
           // Restore the last-used report type if it's valid for this index.
-          if (savedQueryType && queryTypesForIndex(initial).some(qt => qt.key === savedQueryType)) {
+          if (savedQueryType && queryTypesForIndex(initial, qtMap).some(qt => qt.key === savedQueryType)) {
             setQueryType(savedQueryType)
           }
         }
       })
       .catch(() => {})
     refreshQueryTypes()
-  }, [server, refreshQueryTypes])
+  }, [server, refreshQueryTypes, refreshIndexQueryTypes])
 
   // Remember the selected index across sessions (mirrors theme persistence).
   useEffect(() => {
@@ -1821,6 +2280,8 @@ export default function App() {
     setStatus(mode === 'aggregate' ? 'Analyserer dokumenter — dette tar 1–3 min…' : 'Søker…')
     setStatusErr(false)
 
+    const convId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+
     const controller = new AbortController()
     cancelRef.current = { controller, jobId: null, cancelled: false }
 
@@ -1849,9 +2310,12 @@ export default function App() {
         const data = await res.json()
         if (!res.ok) throw new Error(data.error || res.statusText)
         setStatus(`${(data.sources || []).length} kilder funnet`)
-        setResults(prev => prev.map(r => r._id === placeholderId
-          ? { _type: 'query', ...data, filters: activeFiltersRef.current, index_name: selectedIndexRef.current }
-          : r))
+        const finalResult = { _type: 'query', _id: placeholderId, ...data, filters: activeFiltersRef.current, index_name: selectedIndexRef.current }
+        setResults(prev => prev.map(r => r._id === placeholderId ? finalResult : r))
+        saveConversation({
+          id: convId, ts: Date.now(), mode: 'query',
+          index: selectedIndexRef.current, question: q, result: finalResult,
+        })
 
       } else {
         const body = {
@@ -1905,6 +2369,14 @@ export default function App() {
               const items = evt[STRUCTURED_OUTPUT_KEYS[queryType]] || []
               setStatus(`${evt.documents_visited} dokumenter · ${evt.documents_with_findings} med funn · ${items.length} resultater`)
               patch({ ...evt, _loading: false, _type: 'aggregate' })
+              saveConversation({
+                id: convId, ts: Date.now(), mode: 'aggregate', queryType,
+                index: selectedIndexRef.current, question: q,
+                result: {
+                  _type: 'aggregate', _id: placeholderId, _loading: false,
+                  question: q, query_type: queryType, index_name: selectedIndexRef.current, ...evt,
+                },
+              })
               done = true
             } else if (evt.event === 'cancelled') {
               setStatusErr(true)
@@ -1965,7 +2437,7 @@ export default function App() {
               color: '#fff', fontWeight: 700, fontSize: 14,
             }}>L</div>
             <div>
-              <div style={{ fontSize: 16, fontWeight: 600, color: C.text, lineHeight: 1.2 }}>Lab Document Query</div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: C.text, lineHeight: 1.2 }}>DokumentLab</div>
               <div style={{ fontSize: 12, color: C.textFaint, lineHeight: 1.2 }}>Søk og analyser dokumenter med AI</div>
             </div>
           </div>
@@ -1975,7 +2447,12 @@ export default function App() {
                 <span style={{ fontSize: 12, color: C.textFaint }}>Index:</span>
                 <select
                   value={selectedIndex}
-                  onChange={e => { selectedIndexRef.current = e.target.value; setSelectedIndex(e.target.value) }}
+                  onChange={e => {
+                    selectedIndexRef.current = e.target.value
+                    setSelectedIndex(e.target.value)
+                    // Switching index always proposes "Fri analyse" first.
+                    setQueryType('free')
+                  }}
                   style={{
                     padding: '6px 10px', fontSize: 13, fontFamily: 'inherit',
                     border: `1px solid ${C.border}`, borderRadius: 8,
@@ -2007,6 +2484,18 @@ export default function App() {
         </div>
       </header>
 
+      <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+        <ConversationSidebar
+          open={sidebarOpen}
+          onToggle={() => setSidebarOpen(o => !o)}
+          history={history}
+          activeId={activeConvId}
+          onSelect={openConversation}
+          onDelete={deleteConversation}
+          onClear={clearHistory}
+          user={currentUser}
+        />
+        <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '1.75rem 1.5rem 3rem' }}>
 
         {view === 'admin' && (
@@ -2018,6 +2507,11 @@ export default function App() {
               setIndexes(prev => prev.includes(name) ? prev : [...prev, name].sort())
               selectedIndexRef.current = name
               setSelectedIndex(name)
+              // A fresh index always defaults to "Fri analyse" — the only type
+              // guaranteed to apply before any per-index types are pinned.
+              setQueryType('free')
+              // Pick up the analysetyper just pinned to the new index.
+              refreshIndexQueryTypes()
             }}
           />
         )}
@@ -2242,6 +2736,8 @@ export default function App() {
         )}
         </>}
 
+      </div>
+        </div>
       </div>
     </div>
   )
