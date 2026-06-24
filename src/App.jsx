@@ -30,6 +30,11 @@ const QUERY_TYPES = [
   { key: 'personas', label: 'Personas',          description: 'Syntetiser personas basert på funn',         indexes: ['DigiUng_lab'] },
   { key: 'free',     label: 'Fri analyse',       description: 'Åpent spørsmål på tvers av alle dokumenter' },
   { key: 'strategisk_risiko', label: 'Strategisk risiko', description: 'Analysekjede per dokument: driver → sårbarhet → konsekvens → risiko', indexes: ['Strategisk_risiko'] },
+  // Compliance-svar mot WHO-koden / Baby-Friendly: Konklusjon + begrunnelse +
+  // henvisning. The sentinel `indexes` keeps it hidden on existing indexes by
+  // default; it stays selectable in the create dialog (which lists all types)
+  // and becomes active for any index whose saved selection includes it.
+  { key: 'who_kode', label: 'WHO-kode compliance', description: 'Regelverkssjekk: Tillatt/Ikke tillatt + begrunnelse + henvisning til artikkel/resolusjon/BFHI-trinn', indexes: ['__who_kode__'] },
 ]
 
 // An admin can pin an explicit set of analysetyper to an index at creation time
@@ -53,7 +58,7 @@ const DEFAULT_QUERY_TYPE_KEYS = QUERY_TYPES.filter(qt => !qt.indexes?.length).ma
 // query_type values that produce the structured analysekjede output.
 const STRUCTURED_OUTPUT_KEYS = {
   problems: 'problems', moments: 'moments', personas: 'personas',
-  free: 'findings', strategisk_risiko: 'risikoomrader',
+  free: 'findings', strategisk_risiko: 'risikoomrader', who_kode: 'findings',
 }
 
 // Example questions are keyed by index name, then by mode. `_default` is used
@@ -1775,6 +1780,7 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
   const [newIndexName, setNewIndexName] = useState('')
   const [createBusy, setCreateBusy] = useState(false)
   const [createErr, setCreateErr] = useState('')
+  const [materializeStatus, setMaterializeStatus] = useState('')  // progress of URL→PDF download
   // Existing reports the new index can be seeded from.
   const [allReports, setAllReports] = useState(null)
   const [selectedKeys, setSelectedKeys] = useState(() => new Set())
@@ -1797,6 +1803,34 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
     return () => { cancelled = true }
   }, [creatingIndex, server])
 
+  // Poll a materialize (URL→PDF) background job until it finishes, streaming a
+  // human-readable status line. Resolves with the final summary.
+  const pollMaterialize = (jobId) => new Promise((resolve) => {
+    const base = server.replace(/\/$/, '')
+    let last = 0
+    let final = { status: 'done', converted: 0, failed: 0 }
+    const tick = async () => {
+      try {
+        const r = await fetch(`${base}/admin/reindex/${jobId}?last=${last}`)
+        if (r.ok) {
+          const d = await r.json()
+          last = d.total ?? last
+          for (const ev of (d.events || [])) {
+            if (ev.event === 'start') setMaterializeStatus(`Laster ned ${ev.total} URL-kilde(r) som filer…`)
+            else if (ev.event === 'entry_start') setMaterializeStatus(`Laster ned ${ev.index}/${ev.total}: ${ev.tittel || ev.url}`)
+            else if (ev.event === 'entry_done') setMaterializeStatus(`Lastet ned ${ev.index}/${ev.total}: ${ev.tittel || ev.url}`)
+            else if (ev.event === 'entry_failed') setMaterializeStatus(`Hoppet over ${ev.index}/${ev.total}: ${ev.tittel || ev.url}`)
+            else if (ev.event === 'done') final = { status: 'done', converted: ev.converted || 0, failed: ev.failed || 0 }
+            else if (ev.event === 'error') final = { status: 'error', message: ev.message }
+          }
+          if (d.status === 'done' || d.status === 'error') { resolve(final); return }
+        }
+      } catch { /* transient — keep polling */ }
+      setTimeout(tick, 800)
+    }
+    tick()
+  })
+
   const submitNewIndex = async (e) => {
     e?.preventDefault?.()
     const name = newIndexName.trim()
@@ -1805,7 +1839,7 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
       setCreateErr('Ugyldig navn. Tillatte tegn: a-z, A-Z, 0-9, _ og -')
       return
     }
-    setCreateBusy(true); setCreateErr('')
+    setCreateBusy(true); setCreateErr(''); setMaterializeStatus('')
     try {
       const base = server.replace(/\/$/, '')
       const chosen = (allReports || []).filter(r => selectedKeys.has(r.key)).map(r => r.entry)
@@ -1816,8 +1850,26 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || res.statusText)
-      onIndexCreated?.(name)
-      setCreatingIndex(false); setNewIndexName('')
+
+      // Seeded URL sources are downloaded into data/<index>/ as PDFs in the
+      // background. Show progress, then finalize. The index exists regardless.
+      if (data.materialize_job_id) {
+        setMaterializeStatus('Forbereder nedlasting av URL-kilder…')
+        const summary = await pollMaterialize(data.materialize_job_id)
+        onIndexCreated?.(name)
+        if (summary.status === 'error') {
+          setCreateErr(`Indeksen ble opprettet, men nedlasting av URL-kilder feilet: ${summary.message}`)
+          setMaterializeStatus('')
+          return  // keep the dialog open so the message is visible
+        }
+        if (summary.failed > 0) {
+          setMaterializeStatus(`Indeksen ble opprettet. ${summary.converted} kilde(r) lastet ned, ${summary.failed} feilet (utilgjengelige for serveren — beholdes som URL). Bygg indeksen med «Regenerer».`)
+          return  // keep the dialog open so the summary is visible
+        }
+      } else {
+        onIndexCreated?.(name)
+      }
+      setCreatingIndex(false); setNewIndexName(''); setMaterializeStatus('')
     } catch (e) {
       setCreateErr(e.message)
     } finally {
@@ -1854,8 +1906,12 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={onBackToSearch} style={btn.ghost}>← Tilbake til søk</button>
-          <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny indeks</button>
-          <button onClick={() => setAdding(true)} disabled={adding || !indexName} style={btn.primary}>+ Legg til rapport</button>
+          {!creatingIndex && (
+            <>
+              <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny indeks</button>
+              <button onClick={() => setAdding(true)} disabled={adding || !indexName} style={btn.primary}>+ Legg til rapport</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -1905,52 +1961,61 @@ function AdminView({ server, indexName, onBackToSearch, onIndexCreated }) {
           />
 
           {createErr && <div style={{ fontSize: 12, color: C.danger, margin: '8px 0' }}>{createErr}</div>}
+          {materializeStatus && <div style={{ fontSize: 12, color: C.textMute, margin: '8px 0' }}>{materializeStatus}</div>}
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button type="submit" disabled={createBusy} style={btn.primary}>
-              {createBusy ? 'Oppretter…' : (selectedKeys.size ? `Opprett med ${selectedKeys.size} rapport(er)` : 'Opprett')}
+              {createBusy ? (materializeStatus ? 'Laster ned kilder…' : 'Oppretter…') : (selectedKeys.size ? `Opprett med ${selectedKeys.size} rapport(er)` : 'Opprett')}
             </button>
-            <button type="button" onClick={() => setCreatingIndex(false)} disabled={createBusy} style={btn.ghost}>Avbryt</button>
+            <button type="button" onClick={() => { setCreatingIndex(false); setMaterializeStatus('') }} disabled={createBusy} style={btn.ghost}>
+              {(!createBusy && (materializeStatus || createErr)) ? 'Lukk' : 'Avbryt'}
+            </button>
           </div>
         </form>
       )}
 
-      {adding && (
-        <AddEntryForm server={server} indexName={indexName}
-          onAdded={handleAdded} onClose={() => setAdding(false)} />
+      {/* Original-index editing — hidden while the new-index dialog is open so
+          "Ny indeks" shows only its own form. */}
+      {!creatingIndex && (
+        <>
+          {adding && (
+            <AddEntryForm server={server} indexName={indexName}
+              onAdded={handleAdded} onClose={() => setAdding(false)} />
+          )}
+
+          <div style={{ marginBottom: 16 }}>
+            <ReindexPanel server={server} indexName={indexName} />
+          </div>
+
+          {err && <div style={{ ...card, padding: '0.75rem 1rem', marginBottom: 12, color: C.danger, fontSize: 13 }}>Feil ved lasting: {err}</div>}
+
+          <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+            <div style={{ padding: '10px 14px', background: C.bg, borderBottom: `1px solid ${C.border}`,
+              display: 'grid', gridTemplateColumns: '2fr 2fr 1.2fr 0.6fr auto', gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+              <div>Tittel</div>
+              <div>Kilde</div>
+              <div>Segment</div>
+              <div>År</div>
+              <div style={{ textAlign: 'right' }}>Handling</div>
+            </div>
+            {entries == null ? (
+              <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Laster…</div>
+            ) : entries.length === 0 ? (
+              <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Ingen oppføringer ennå.</div>
+            ) : (
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <tbody>
+                  {entries.map((entry, i) => (
+                    <AdminEntryRow key={entryKey(entry) || i}
+                      entry={entry} server={server} indexName={indexName}
+                      onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load}
+                      editingKey={editingKey} setEditingKey={setEditingKey} />
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
       )}
-
-      <div style={{ marginBottom: 16 }}>
-        <ReindexPanel server={server} indexName={indexName} />
-      </div>
-
-      {err && <div style={{ ...card, padding: '0.75rem 1rem', marginBottom: 12, color: C.danger, fontSize: 13 }}>Feil ved lasting: {err}</div>}
-
-      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
-        <div style={{ padding: '10px 14px', background: C.bg, borderBottom: `1px solid ${C.border}`,
-          display: 'grid', gridTemplateColumns: '2fr 2fr 1.2fr 0.6fr auto', gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
-          <div>Tittel</div>
-          <div>Kilde</div>
-          <div>Segment</div>
-          <div>År</div>
-          <div style={{ textAlign: 'right' }}>Handling</div>
-        </div>
-        {entries == null ? (
-          <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Laster…</div>
-        ) : entries.length === 0 ? (
-          <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Ingen oppføringer ennå.</div>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <tbody>
-              {entries.map((entry, i) => (
-                <AdminEntryRow key={entryKey(entry) || i}
-                  entry={entry} server={server} indexName={indexName}
-                  onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load}
-                  editingKey={editingKey} setEditingKey={setEditingKey} />
-              ))}
-            </tbody>
-          </table>
-        )}
-      </div>
     </div>
   )
 }
