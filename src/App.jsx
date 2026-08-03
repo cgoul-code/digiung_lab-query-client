@@ -61,6 +61,45 @@ const STRUCTURED_OUTPUT_KEYS = {
   free: 'findings', strategisk_risiko: 'risikoomrader', who_kode: 'findings',
 }
 
+// The two search modes, with the copy shown in the segmented control (`hint`,
+// on hover) and behind the info button next to each label (`info`).
+const MODES = [
+  {
+    key: 'query',
+    label: 'Dokumentsøk',
+    hint: 'Direkte spørsmål med kildehenvisninger',
+    info: [
+      'Dokumentsøk er et semantisk søk. Spørsmålet ditt sammenlignes med innholdet i hele tekstbanken, og de tekstbitene som ligner mest hentes fram — hvor mange, og hvor lik teksten må være, styres av innstillingene top_k og cutoff under «Avansert». Du får ett samlet svar med kildehenvisninger til de dokumentene som faktisk ble brukt.',
+      'Søket tar noen sekunder og krever alltid et konkret spørsmål. Det egner seg når du vil vite hva som står om et bestemt tema, og kunne klikke deg tilbake til kilden. Merk at dokumenter som bare så vidt berører temaet ikke kommer med — de taper i rangeringen mot de mest relevante treffene.',
+    ],
+  },
+  {
+    key: 'aggregate',
+    label: 'Aggregert analyse',
+    hint: 'Syntetiser funn på tvers av dokumenter',
+    info: [
+      'Aggregert analyse går motsatt vei: i stedet for å plukke ut de beste treffene går den systematisk gjennom dokumentene ett for ett, henter et fast antall tekstbiter fra hvert (innstillingen «Chunks per doc» under «Avansert»), kjører en ekstraksjon per dokument etter valgt analysetype — Problemer, Kritiske øyeblikk, Personas, Strategisk risiko og så videre — og syntetiserer deretter funnene på tvers til én strukturert liste.',
+      'Derfor viser resultatet «X dokumenter besøkt · Y med funn»: dekningsgraden er poenget. Analysen tar 1–3 minutter og kan kjøres helt uten spørsmål — da er det analysetypens egen instruks som styrer jobben. Bruk den når du vil vite hva som er gjennomgående i materialet: mønstre, temaer og risikoområder som først blir synlige når man ser alle dokumentene under ett.',
+    ],
+  },
+]
+
+// Copy for the info buttons on the sliders in the «Avansert» drawer.
+const PARAM_INFO = {
+  top_k: [
+    'top_k er hvor mange tekstbiter («chunks») søket henter fra tekstbanken — altså det maksimale antallet biter som sendes videre til modellen som grunnlag for svaret. Bitene rangeres etter hvor likt innholdet er spørsmålet ditt, og de top_k beste går videre.',
+    'Høy verdi gir bredere grunnlag og flere kilder, men også mer støy og lengre svartid. Lav verdi gir skarpere og mer fokuserte svar, men du risikerer å gå glipp av noe som står i et dokument lenger ned på lista. Standard er 5: øk hvis svaret virker tynt, senk hvis kildelista inneholder irrelevante treff.',
+  ],
+  cutoff: [
+    'cutoff er terskelen for hvor likt en tekstbit må være spørsmålet for å bli brukt i det hele tatt. Hver bit får en likhetsscore mellom 0 og 1, og alt som havner under terskelen forkastes — også når det ellers ville kommet med innenfor top_k.',
+    'De to henger sammen: top_k setter taket på antall, cutoff luker bort de svakeste treffene. Standard er 0,30. Sett den høyere hvis du får med kilder som egentlig ikke handler om temaet, og lavere hvis du ofte ender opp uten treff — men en lav terskel slipper også gjennom løsere sammenhenger.',
+  ],
+  chunks_per_doc: [
+    'Chunks per doc styrer hvor mange tekstbiter som hentes fra hvert enkelt dokument før ekstraksjonen kjøres. Aggregert analyse besøker alle dokumentene uansett, så denne innstillingen bestemmer dybden per dokument — ikke bredden i materialet. Bitene velges fortsatt etter relevans, men innenfor ett dokument om gangen.',
+    'Høy verdi gir et mer fullstendig bilde av hvert dokument, men analysen tar lengre tid og koster mer, siden hele materialet gjennomgås. Standard er 8. Lange rapporter tåler en høyere verdi; er dokumentene korte, er det lite å hente på å skru opp.',
+  ],
+}
+
 // Example questions are keyed by index name, then by mode. `_default` is used
 // for any index without a tailored set (and as a per-mode fallback).
 const EXAMPLE_QUESTIONS = {
@@ -275,6 +314,68 @@ function Chevron({ open }) {
   )
 }
 
+// Small "i" button that opens a popover with a longer explanation. Rendered as
+// a sibling of the button it belongs to — never nested inside one.
+function InfoButton({ title, paragraphs, align = 'left' }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onEsc = e => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    document.addEventListener('keydown', onEsc)
+    return () => {
+      document.removeEventListener('mousedown', handler)
+      document.removeEventListener('keydown', onEsc)
+    }
+  }, [open])
+
+  return (
+    <span ref={ref} style={{ position: 'relative', display: 'inline-flex' }}>
+      <button
+        onClick={() => setOpen(p => !p)}
+        title={`Om ${title}`}
+        aria-label={`Om ${title}`}
+        aria-expanded={open}
+        style={{
+          width: 18, height: 18, padding: 0, borderRadius: 99, cursor: 'pointer',
+          border: `1px solid ${open ? C.accent : C.border}`,
+          background: open ? C.accentBg : 'transparent',
+          color: open ? C.accent : C.textFaint,
+          fontSize: 11, fontWeight: 700, fontFamily: 'inherit', lineHeight: 1,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        }}
+      >i</button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 8px)', zIndex: 200,
+          ...(align === 'right' ? { right: 0 } : { left: 0 }),
+          width: 'min(440px, 86vw)',
+          background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10,
+          boxShadow: '0 8px 24px rgba(15,23,42,0.10)', padding: '14px 16px',
+          textAlign: 'left', cursor: 'default',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 8 }}>
+            <span style={{ ...metaLabel }}>{title}</span>
+            <button onClick={() => setOpen(false)} aria-label="Lukk" style={{
+              border: 'none', background: 'transparent', cursor: 'pointer',
+              color: C.textFaint, fontSize: 16, lineHeight: 1, padding: 0, fontFamily: 'inherit',
+            }}>×</button>
+          </div>
+          {paragraphs.map((p, i) => (
+            <p key={i} style={{
+              margin: i === 0 ? 0 : '10px 0 0', fontSize: 13, lineHeight: 1.55,
+              color: C.textMute, fontWeight: 400,
+            }}>{p}</p>
+          ))}
+        </div>
+      )}
+    </span>
+  )
+}
+
 function SectionToggle({ open, onToggle, label, badge }) {
   return (
     <div
@@ -437,10 +538,13 @@ function ActiveFilterTags({ filters, onRemoveValue }) {
   )
 }
 
-function ParamSlider({ label, min, max, step, value, onChange, format }) {
+function ParamSlider({ label, min, max, step, value, onChange, format, info }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: C.textMute }}>
-      <label style={{ minWidth: 110 }}>{label}</label>
+      <span style={{ minWidth: 110, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <label>{label}</label>
+        {info && <InfoButton title={label} paragraphs={info} />}
+      </span>
       <input type="range" min={min} max={max} step={step} value={value}
         onChange={e => onChange(step < 1 ? parseFloat(e.target.value) : parseInt(e.target.value))}
         style={{ width: 120, accentColor: C.accent }} />
@@ -2844,18 +2948,25 @@ export default function App() {
         {/* Mode selector */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
           <div style={{ display: 'inline-flex', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 3 }}>
-            {[
-              ['query', 'Dokumentsøk', 'Direkte spørsmål med kildehenvisninger'],
-              ['aggregate', 'Aggregert analyse', 'Syntetiser funn på tvers av dokumenter'],
-            ].map(([m, label, hint]) => (
-              <button key={m} onClick={() => { setMode(m); setStatus('') }} title={hint} style={{
-                padding: '8px 16px', fontSize: 13, border: 'none', cursor: 'pointer', borderRadius: 8,
-                background: mode === m ? C.accentBg : 'transparent',
-                color: mode === m ? C.accent : C.textMute,
-                fontWeight: mode === m ? 600 : 500,
-                fontFamily: 'inherit',
-              }}>{label}</button>
-            ))}
+            {MODES.map(({ key: m, label, hint, info }, i) => {
+              const active = mode === m
+              return (
+                <div key={m} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  borderRadius: 8, paddingRight: 12,
+                  background: active ? C.accentBg : 'transparent',
+                }}>
+                  <button onClick={() => { setMode(m); setStatus('') }} title={hint} style={{
+                    padding: '8px 4px 8px 16px', fontSize: 13, border: 'none', cursor: 'pointer',
+                    borderRadius: 8, background: 'transparent',
+                    color: active ? C.accent : C.textMute,
+                    fontWeight: active ? 600 : 500,
+                    fontFamily: 'inherit',
+                  }}>{label}</button>
+                  <InfoButton title={label} paragraphs={info} align={i === MODES.length - 1 ? 'right' : 'left'} />
+                </div>
+              )
+            })}
           </div>
         </div>
 
@@ -2968,14 +3079,14 @@ export default function App() {
             <div style={{ marginTop: 14, padding: '14px 16px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
                 {mode === 'query' && <>
-                  <ParamSlider label="top_k" min={1} max={40} step={1} value={topK} onChange={setTopK} format={v => v} />
-                  <ParamSlider label="cutoff" min={0} max={1} step={0.05} value={cutoff} onChange={setCutoff} format={v => v.toFixed(2)} />
+                  <ParamSlider label="top_k" min={1} max={40} step={1} value={topK} onChange={setTopK} format={v => v} info={PARAM_INFO.top_k} />
+                  <ParamSlider label="cutoff" min={0} max={1} step={0.05} value={cutoff} onChange={setCutoff} format={v => v.toFixed(2)} info={PARAM_INFO.cutoff} />
                 </>}
                 {mode === 'aggregate' && <>
                   {queryType === 'personas' && (
                     <ParamSlider label="Antall personas" min={1} max={8} step={1} value={nPersonas} onChange={setNPersonas} format={v => v} />
                   )}
-                  <ParamSlider label="Chunks per doc" min={1} max={16} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} />
+                  <ParamSlider label="Chunks per doc" min={1} max={16} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} info={PARAM_INFO.chunks_per_doc} />
                 </>}
               </div>
               {mode === 'aggregate' && (
