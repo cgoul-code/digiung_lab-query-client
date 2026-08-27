@@ -66,12 +66,12 @@ const STRUCTURED_OUTPUT_KEYS = {
 const AGGREGATE_INFO = {
   title: 'Aggregert analyse',
   paragraphs: [
-    'Aggregert analyse går motsatt vei: i stedet for å plukke ut de beste treffene går den systematisk gjennom dokumentene ett for ett, henter et fast antall tekstbiter fra hvert (innstillingen «Chunks per doc» under «Avansert»), kjører en ekstraksjon per dokument etter valgt analysetype — Problemer, Kritiske øyeblikk, Personas, Strategisk risiko og så videre — og syntetiserer deretter funnene på tvers til én strukturert liste.',
+    'Aggregert analyse går motsatt vei: i stedet for å plukke ut de beste treffene går den systematisk gjennom dokumentene ett for ett, henter et fast antall tekstbiter fra hvert (innstillingen «Chunks per doc» under «Analysedybde»), kjører en ekstraksjon per dokument etter valgt analysetype — Problemer, Kritiske øyeblikk, Personas, Strategisk risiko og så videre — og syntetiserer deretter funnene på tvers til én strukturert liste.',
     'Derfor viser resultatet «X dokumenter besøkt · Y med funn»: dekningsgraden er poenget. Analysen tar 1–3 minutter og kan kjøres helt uten spørsmål — da er det analysetypens egen instruks som styrer jobben. Bruk den når du vil vite hva som er gjennomgående i materialet: mønstre, temaer og risikoområder som først blir synlige når man ser alle dokumentene under ett.',
   ],
 }
 
-// Copy for the info buttons on the sliders in the «Avansert» drawer.
+// Copy for the info buttons on the sliders in the «Analysedybde» drawer.
 const PARAM_INFO = {
   chunks_per_doc: [
     'Chunks per doc styrer hvor mange tekstbiter som hentes fra hvert enkelt dokument før ekstraksjonen kjøres. Aggregert analyse besøker alle dokumentene uansett, så denne innstillingen bestemmer dybden per dokument — ikke bredden i materialet. Bitene velges fortsatt etter relevans, men innenfor ett dokument om gangen.',
@@ -698,6 +698,153 @@ function RiskItem({ item }) {
   )
 }
 
+// Matching a finding's source back to the document it came from: the synthesis
+// and the per-document pass are separate LLM calls, so spacing and casing can't
+// be relied on.
+// Applied to whatever must not be touched while a job runs. Inert rather than
+// hidden: you can still read what's there, it just can't be clicked.
+function lockedWhile(locked) {
+  return locked ? { pointerEvents: 'none', opacity: 0.4, userSelect: 'none' } : null
+}
+
+function normTitle(s) {
+  return (s || '').split(/\s+/).filter(Boolean).join(' ').toLowerCase()
+}
+
+// Passages from one document backing one finding. When the finding names pages,
+// those win; otherwise everything the document contributed is shown, since
+// narrowing further would be guesswork.
+function chunksForPages(entry, pages) {
+  const chunks = entry?.chunks || []
+  if (!pages?.length) return chunks
+  const want = new Set(pages.map(p => String(p).trim()))
+  const hit = chunks.filter(c => want.has(String(c.page).trim()))
+  return hit.length ? hit : chunks
+}
+
+// One document's contribution to one finding: what was pulled out of it, and
+// the passages it was pulled from.
+function FindingSource({ source, entry }) {
+  const [open, setOpen] = useState(false)
+  const isObj = source && typeof source === 'object'
+  const tittel = isObj ? (source.tittel || '') : String(source)
+  const pages = isObj ? (source.pages || []) : []
+
+  if (!entry) {
+    // The synthesis named a source the per-document pass didn't produce — say
+    // so rather than drop the reference.
+    return (
+      <div style={{ fontSize: 12.5, color: C.textFaint, marginTop: 10, fontStyle: 'italic' }}>
+        {tittel}{pages.length ? ` (s. ${pages.join(', ')})` : ''} — ingen utdrag tilgjengelig
+      </div>
+    )
+  }
+
+  const s = entry.structured || {}
+  // Risk documents come back as a structured chain, everything else as a plain
+  // list of findings — both answer «what did this document contribute».
+  const extracted = s.kildefunn?.length ? s.kildefunn : (entry.findings || [])
+  const chunks = chunksForPages(entry, pages)
+  const parts = [entry.tittel || entry.filename]
+  if (entry.publisert_av) parts.push(entry.publisert_av)
+  if (entry.publisert_arstall) parts.push(String(entry.publisert_arstall))
+  const heading = parts.filter(Boolean).join(' · ')
+  const url = (entry.kilde_url || '').trim()
+
+  return (
+    <div style={{ marginTop: 12, paddingLeft: 12, borderLeft: `3px solid ${C.accentSoft}` }}>
+      <div style={{ fontWeight: 600, fontSize: 13, color: C.text, marginBottom: 4 }}>
+        {url
+          ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, textDecoration: 'none' }}>{heading} ↗</a>
+          : heading}
+      </div>
+      {s.relevans && (
+        <div style={{ fontSize: 12.5, color: C.textMute, marginBottom: 6, fontStyle: 'italic' }}>{s.relevans}</div>
+      )}
+      <LabeledList label="Trukket ut fra dokumentet" values={extracted} />
+      {chunks.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label={`Sitater (${chunks.length})`} />
+          {open && chunks.map((c, i) => (
+            <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+              {c.page != null && <span style={{ fontWeight: 600 }}>[Side {c.page}] </span>}«{c.excerpt}»
+              {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// The evidence half of a result: every finding followed by the documents behind
+// it. Shared by all analysis types — only the shape of what each document
+// contributed differs, and FindingSource absorbs that.
+function FindingsBreakdown({ items, perDoc }) {
+  const byTitle = new Map()
+  for (const e of perDoc) {
+    const k = normTitle(e.tittel || e.filename)
+    if (k && !byTitle.has(k)) byTitle.set(k, e)
+  }
+  const cited = new Set()
+  for (const item of items) {
+    for (const s of item.sources || []) {
+      const k = normTitle(typeof s === 'object' ? s.tittel : s)
+      if (byTitle.has(k)) cited.add(k)
+    }
+  }
+  const leftovers = perDoc.filter(e => !cited.has(normTitle(e.tittel || e.filename)))
+  const heading = { fontSize: 13, fontWeight: 700, color: C.text, margin: '4px 0 2px', textTransform: 'uppercase', letterSpacing: '.04em' }
+
+  return (
+    <>
+      {/* A hard break: everything below is evidence for what's above. */}
+      <div style={{ marginTop: 22, paddingTop: 18, borderTop: `3px solid ${C.borderHi}` }}>
+        <div style={heading}>Analyse per funn</div>
+        <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 2, marginBottom: 2 }}>
+          Hva som er trukket ut av hvert dokument bak det enkelte funnet.
+        </div>
+        {items.length === 0
+          ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen funn å bryte ned.</div>
+          : items.map((item, i) => <FindingDetail key={i} item={item} byTitle={byTitle} />)}
+      </div>
+      {leftovers.length > 0 && (
+        <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.border}` }}>
+          <div style={heading}>Dokumenter uten sitater i funnene over</div>
+          {leftovers.map((entry, i) => (
+            entry.structured
+              ? <RiskDocAnalysis key={i} entry={entry} />
+              : <FindingSource key={i} source={{ tittel: entry.tittel || entry.filename }} entry={entry} />
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+// One finding with the documents behind it. Grouping by finding rather than by
+// document puts a claim next to its evidence, instead of leaving the reader to
+// reassemble it from every document section in turn.
+function FindingDetail({ item, byTitle }) {
+  const sources = item.sources || []
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
+      <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6, color: C.text }}>{item.label}</div>
+      {(item.beskrivelse || item.description) && (
+        <div style={{ fontSize: 14, color: C.textMute, lineHeight: 1.65, marginBottom: 4 }}>
+          {item.beskrivelse || item.description}
+        </div>
+      )}
+      {sources.length === 0
+        ? <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: 'italic', marginTop: 8 }}>Ingen kilder er registrert for dette funnet.</div>
+        : sources.map((s, i) => (
+            <FindingSource key={i} source={s}
+              entry={byTitle.get(normTitle(typeof s === 'object' ? s.tittel : s))} />
+          ))}
+    </div>
+  )
+}
+
 function RiskDocAnalysis({ entry }) {
   const [showChunks, setShowChunks] = useState(false)
   const s = entry.structured || {}
@@ -741,15 +888,48 @@ function RiskDocAnalysis({ entry }) {
   )
 }
 
+// The two «system» prompts carry the analytical instruction and are the point
+// of this editor. The two others are templates that inject the document text
+// and the collected findings — placeholders like {context} and {all_findings}
+// are what make the analysis see anything at all, so a typo there silently
+// produces an empty analysis. They are shown for transparency, not editing.
 const PROMPT_FIELDS = [
-  { key: 'extract_system',   label: 'Extract — system' },
-  { key: 'extract_prompt',   label: 'Extract — user' },
-  { key: 'aggregate_system', label: 'Aggregate — system' },
-  { key: 'aggregate_prompt', label: 'Aggregate — user' },
+  {
+    key: 'extract_system', label: 'Instruksjon per dokument', editable: true,
+    hint: 'Styrer hva som hentes ut av hvert enkelt dokument.',
+  },
+  {
+    key: 'extract_prompt', label: 'Mal per dokument', editable: false,
+    hint: 'Fast mal som sender dokumentets tekst inn i analysen.',
+  },
+  {
+    key: 'aggregate_system', label: 'Instruksjon for oppsummeringen', editable: true,
+    hint: 'Styrer hvordan funnene fra alle dokumentene settes sammen.',
+  },
+  {
+    key: 'aggregate_prompt', label: 'Mal for oppsummeringen', editable: false,
+    hint: 'Fast mal som sender de innsamlede funnene inn i oppsummeringen.',
+  },
 ]
+const EDITABLE_PROMPT_FIELDS = PROMPT_FIELDS.filter(f => f.editable)
 
+// A textarea that grows with its content, so a long instruction isn't read
+// through a four-line slot.
+function AutoTextarea({ value, onChange, readOnly, ...rest }) {
+  const ref = useRef(null)
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight + 2}px`
+  }, [value])
+  return <textarea ref={ref} value={value} onChange={onChange} readOnly={readOnly} {...rest} />
+}
+
+// Body only — the toggle lives in the toolbar next to Filtre and Analysedybde,
+// so editing the instructions is its own choice rather than something buried
+// under a settings drawer.
 function PromptsEditor({ queryType, defs, server, onSaved }) {
-  const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState({})
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
@@ -762,12 +942,14 @@ function PromptsEditor({ queryType, defs, server, onSaved }) {
   if (!cfg) return null
 
   const valueOf = (key) => (draft[key] !== undefined ? draft[key] : (cfg[key] || ''))
-  const dirty = PROMPT_FIELDS.some(f => draft[f.key] !== undefined && draft[f.key] !== (cfg[f.key] || ''))
+  const dirty = EDITABLE_PROMPT_FIELDS.some(f => draft[f.key] !== undefined && draft[f.key] !== (cfg[f.key] || ''))
   const base = server.replace(/\/$/, '')
 
   const save = async () => {
     setBusy(true); setMsg(''); setMsgErr(false)
     try {
+      // The locked templates are sent back unchanged: the endpoint stores the
+      // whole set, and omitting them would wipe them.
       const body = {}
       PROMPT_FIELDS.forEach(f => { body[f.key] = valueOf(f.key) })
       const res = await fetch(`${base}/admin/query-types/${queryType}`, {
@@ -788,25 +970,33 @@ function PromptsEditor({ queryType, defs, server, onSaved }) {
   }
 
   return (
-    <div style={{ marginTop: 14 }}>
-      <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label="Rediger prompts" />
-      {open && (
-        <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {PROMPT_FIELDS.map(({ key, label }) => (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {PROMPT_FIELDS.map(({ key, label, hint, editable }) => (
             <div key={key}>
-              <div style={{ ...metaLabel, marginBottom: 4 }}>{label}</div>
-              <textarea
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                <span style={{ ...metaLabel }}>{label}</span>
+                {!editable && <Tag tone="neutral">FAST</Tag>}
+              </div>
+              {hint && <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>{hint}</div>}
+              <AutoTextarea
                 value={valueOf(key)}
-                onChange={e => setDraft(d => ({ ...d, [key]: e.target.value }))}
+                onChange={editable ? (e => setDraft(d => ({ ...d, [key]: e.target.value }))) : undefined}
+                readOnly={!editable}
                 spellCheck={false}
                 style={{
-                  width: '100%', boxSizing: 'border-box', minHeight: 90, resize: 'vertical',
-                  padding: '8px 12px', background: C.bg, borderRadius: 8, fontSize: 12,
-                  color: C.text, border: `1px solid ${C.border}`, fontFamily: 'monospace',
+                  // Height is managed, so a manual resize would only clip text.
+                  width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+                  padding: '8px 12px', borderRadius: 8, fontSize: 12,
+                  border: `1px solid ${C.border}`, fontFamily: 'monospace',
                   lineHeight: 1.5, outline: 'none',
+                  // Editable boxes read as paper; the locked templates stay flat
+                  // against the panel so the difference is visible at a glance.
+                  background: editable ? C.surface : C.bg,
+                  color: editable ? C.text : C.textMute,
+                  cursor: editable ? 'text' : 'default',
                 }}
-                onFocus={e => e.target.style.borderColor = C.accent}
-                onBlur={e => e.target.style.borderColor = C.border}
+                onFocus={editable ? (e => e.target.style.borderColor = C.accent) : undefined}
+                onBlur={editable ? (e => e.target.style.borderColor = C.border) : undefined}
               />
             </div>
           ))}
@@ -824,11 +1014,9 @@ function PromptsEditor({ queryType, defs, server, onSaved }) {
             {msg && <span style={{ fontSize: 12, color: msgErr ? C.danger : C.success }}>{msg}</span>}
           </div>
           <div style={{ fontSize: 11, color: C.textFaint }}>
-            Endringer lagres på serveren og brukes ved neste analyse. Plassholdere som {'{question}'}, {'{tittel}'}, {'{context}'} må beholdes.
+            Endringer lagres på serveren og brukes ved neste analyse. Malene merket FAST kan ikke endres — plassholderne i dem ({'{context}'}, {'{all_findings}'}) er det som gir analysen noe å lese.
           </div>
         </div>
-      )}
-    </div>
   )
 }
 
@@ -876,7 +1064,9 @@ function AggregateResultCard({ data }) {
             ? (data.aggregated
                 ? <span>{items.length} risikoområder</span>
                 : <span>analyse per dokument</span>)
-            : <span>{items.length} {qt.label.toLowerCase()}</span>}
+            : (data.aggregated === false
+                ? <span>analyse per dokument</span>
+                : <span>{items.length} {qt.label.toLowerCase()}</span>)}
         </div>
       )}
 
@@ -884,7 +1074,7 @@ function AggregateResultCard({ data }) {
         <>
           {data.aggregated && (items.length > 0 || (data.monstre || []).length > 0) && (
             <div style={{ marginBottom: 18 }}>
-              <div style={sectionHeading}>Syntese på tvers (longlist)</div>
+              <div style={sectionHeading}>Syntese på tvers av dokumentene</div>
               <LabeledList label="Overordnede mønstre" values={data.monstre} />
               {items.map((item, i) => <RiskItem key={i} item={item} />)}
               <div style={{ marginTop: 12 }}>
@@ -893,16 +1083,38 @@ function AggregateResultCard({ data }) {
               </div>
             </div>
           )}
-          <div style={sectionHeading}>Analyse per dokument</div>
-          {perDoc.length === 0
-            ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen dokumenter ga funn.</div>
-            : perDoc.map((entry, i) => <RiskDocAnalysis key={i} entry={entry} />)}
+          {data.aggregated
+            ? <FindingsBreakdown items={items} perDoc={perDoc} />
+            : (
+              <>
+                <div style={sectionHeading}>Analyse per dokument</div>
+                {perDoc.length === 0
+                  ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen dokumenter ga funn.</div>
+                  : perDoc.map((entry, i) => <RiskDocAnalysis key={i} entry={entry} />)}
+              </>
+            )}
         </>
       )}
 
-      {!isLoading && !isRisk && (items.length === 0
-        ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen funn ble aggregert.</div>
-        : items.map((item, i) => <AggregateItem key={i} item={item} queryType={data.query_type} />)
+      {!isLoading && !isRisk && (
+        data.aggregated === false ? (
+          // No synthesis ran, so there are no findings to group documents under.
+          <>
+            <div style={sectionHeading}>Analyse per dokument</div>
+            {perDoc.length === 0
+              ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen dokumenter ga funn.</div>
+              : perDoc.map((entry, i) => (
+                  <FindingSource key={i} source={{ tittel: entry.tittel || entry.filename }} entry={entry} />
+                ))}
+          </>
+        ) : (
+          <>
+            {items.length === 0
+              ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen funn ble aggregert.</div>
+              : items.map((item, i) => <AggregateItem key={i} item={item} queryType={data.query_type} />)}
+            {perDoc.length > 0 && <FindingsBreakdown items={items} perDoc={perDoc} />}
+          </>
+        )
       )}
       {!isLoading && data._job_id && (
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
@@ -1309,7 +1521,7 @@ function classifyPick(fileList) {
   }
 }
 
-function AddEntryForm({ server, indexName, entries, initialFiles, onImported, onClose }) {
+function AddEntryForm({ server, indexName, entries, initialFiles, onImported, onClose, onBusyChange }) {
   // The picker runs before the form opens, so the form only has to act on it.
   const [pick] = useState(() => classifyPick(initialFiles))
 
@@ -1332,17 +1544,19 @@ function AddEntryForm({ server, indexName, entries, initialFiles, onImported, on
           unsupported={pick.unsupported}
           onImported={onImported}
           onClose={onClose}
+          onBusyChange={onBusyChange}
         />
       )}
     </div>
   )
 }
 
-function ReindexPanel({ server, indexName, onDone, toIngest = 0, toPrune = 0 }) {
+function ReindexPanel({ server, indexName, onDone, onBusyChange, toIngest = 0, toPrune = 0 }) {
   const [job, setJob] = useState(null)  // {status, events[]}
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [docFilter, setDocFilter] = useState('all')   // 'all' | 'new' | 'skipped' | 'failed'
+  const [interrupted, setInterrupted] = useState(false)
   const pollTimer = useRef(null)
   const eventCountRef = useRef(0)  // cumulative events received — used as poll cursor
   const storageKey = `digiung_lab:reindex_job:${indexName}`
@@ -1412,6 +1626,7 @@ function ReindexPanel({ server, indexName, onDone, toIngest = 0, toPrune = 0 }) 
       const res = await fetch(url, { method: 'POST' })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || res.statusText)
+      setInterrupted(false)
       try { localStorage.setItem(storageKey, data.job_id) } catch { /* ignore */ }
       poll(data.job_id)
     } catch (e) { setErr(e.message); setBusy(false); setJob(null) }
@@ -1422,8 +1637,11 @@ function ReindexPanel({ server, indexName, onDone, toIngest = 0, toPrune = 0 }) 
       const base = server.replace(/\/$/, '')
       const res = await fetch(`${base}/admin/reindex/${jobId}?last=${eventCountRef.current}`)
       if (res.status === 404) {
-        // Server forgot the job (e.g. process restart) — drop the stale pointer
+        // The server lost the job — almost always an instance restart. The work
+        // isn't lost with it: the manifest is only written after each batch is
+        // on disk, so a new run picks up exactly where this one stopped.
         try { localStorage.removeItem(storageKey) } catch { /* ignore */ }
+        setInterrupted(true)
         setBusy(false)
         return
       }
@@ -1448,6 +1666,8 @@ function ReindexPanel({ server, indexName, onDone, toIngest = 0, toPrune = 0 }) 
       }
     } catch (e) { setErr(e.message); setBusy(false) }
   }
+
+  useEffect(() => { onBusyChange?.(busy) }, [busy, onBusyChange])
 
   // Safety net: keep `busy` in sync with job.status so the button can never
   // get stuck on "Kjører…" if a code path forgets to setBusy(false).
@@ -1589,6 +1809,18 @@ function ReindexPanel({ server, indexName, onDone, toIngest = 0, toPrune = 0 }) 
       </div>
 
       {err && <div style={{ fontSize: 12, color: C.danger, marginTop: 10 }}>{err}</div>}
+
+      {interrupted && (
+        <div style={{
+          marginTop: 12, padding: '10px 12px', borderRadius: 8,
+          background: C.warnBg, border: `1px solid ${C.border}`,
+          fontSize: 12.5, color: C.textMute, lineHeight: 1.6,
+        }}>
+          <strong style={{ color: C.text }}>Byggingen ble avbrutt</strong> — serveren startet
+          sannsynligvis på nytt. {current > 0 ? `${current} av ${total} dokumenter rakk å bli bygget inn, og de er lagret.` : 'Det som rakk å bli bygget inn er lagret.'}{' '}
+          Kjør «Oppdater dokumentbanken» på nytt, så fortsetter den der den slapp.
+        </div>
+      )}
 
       {job && (
         <div style={{ marginTop: 14 }}>
@@ -1874,13 +2106,15 @@ function ReportPicker({ reports, selected, search, onSearch, onToggle, onSelectA
 // filtered out *before* upload, because the server writes an uploaded file to
 // disk before it reports the duplicate — posting a known filename would
 // overwrite the stored copy even though the entry itself is kept.
-function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported, onImported, onClose }) {
+function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported, onImported, onClose, onBusyChange }) {
   const [excluded, setExcluded] = useState(() => new Set())
   const [derive, setDerive]     = useState(true)
   const [running, setRunning]   = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0, current: '' })
   const [result, setResult]     = useState(null)
   const cancelRef = useRef(false)
+
+  useEffect(() => { onBusyChange?.(running) }, [running, onBusyChange])
 
   const existing = useMemo(() => {
     const set = new Set()
@@ -2057,6 +2291,19 @@ function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported,
         </span>
       </label>
 
+      {selectedFiles.length > 20 && (
+        <div style={{
+          padding: '9px 12px', marginBottom: 10, borderRadius: 8,
+          background: C.warnBg, border: `1px solid ${C.border}`,
+          fontSize: 12.5, color: C.textMute, lineHeight: 1.6,
+        }}>
+          Dette er en stor import. Dokumentene lastes opp ett om gangen, og hvert
+          av dem er lagret så snart det er lagt til — avbryter du underveis, eller
+          faller nettforbindelsen, beholder du det som er kommet inn. Kjør importen
+          på nytt etterpå, så hoppes de over automatisk.
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={run} disabled={!selectedFiles.length}
           style={{ ...btn.primary, ...(selectedFiles.length ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
@@ -2074,10 +2321,10 @@ function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported,
 // list, and only becomes searchable once the dokumentbank is rebuilt. The
 // numbered sections — badge plus a connecting rail down the left — keep that
 // order visible instead of leaving it to the help text.
-function StepSection({ step, title, description, action, children }) {
+function StepSection({ step, title, description, action, children, locked }) {
   return (
-    <section style={{ marginBottom: 24 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10, flexWrap: 'wrap' }}>
+    <section style={{ marginBottom: 24 }} aria-busy={locked || undefined}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10, flexWrap: 'wrap', ...lockedWhile(locked) }}>
         <div style={{
           flexShrink: 0, width: 26, height: 26, borderRadius: 999,
           background: C.accent, color: '#fff',
@@ -2090,7 +2337,7 @@ function StepSection({ step, title, description, action, children }) {
         </div>
         {action && <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{action}</div>}
       </div>
-      <div style={{ marginLeft: 12, paddingLeft: 24, borderLeft: `2px solid ${C.border}` }}>
+      <div style={{ marginLeft: 12, paddingLeft: 24, borderLeft: `2px solid ${C.border}`, ...lockedWhile(locked) }}>
         {children}
       </div>
     </section>
@@ -2320,6 +2567,29 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   // seeds the form — so adding a document never starts on an empty screen.
   const addFilesRef = useRef(null)
   const [pendingFiles, setPendingFiles] = useState(null)
+  // AddEntryForm reads its files once, on mount — a fresh pick has to remount it.
+  const [pickSeq, setPickSeq] = useState(0)
+  // The OS file dialog can take a moment to appear, and .click() returns long
+  // before it does — without this the button looks like it ignored the press.
+  const [picking, setPicking] = useState(false)
+
+  // The dialog closing is the only reliable end signal across browsers:
+  // `cancel` isn't fired everywhere, but the window always regains focus. The
+  // delay lets a file selection's own change event settle first.
+  useEffect(() => {
+    if (!picking) return
+    let timer = null
+    const onFocus = () => { timer = setTimeout(() => setPicking(false), 500) }
+    window.addEventListener('focus', onFocus)
+    // If the dialog never opened, the window never lost focus and no focus
+    // event is coming — release the button rather than leave it stuck.
+    const failsafe = setTimeout(() => setPicking(false), 60000)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      clearTimeout(failsafe)
+      if (timer) clearTimeout(timer)
+    }
+  }, [picking])
 
   const selectIndex = (name) => {
     if (name === indexName) return
@@ -2334,6 +2604,12 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
 
   // The committed list, captured on first load — see rollback() below.
   const baselineRef = useRef(null)
+  // Which long job is running, if any: 'build' | 'import'. Everything outside
+  // the running job is locked so the two can't be started against each other.
+  const [runningJob, setRunningJob] = useState(null)
+  const onBuildBusy  = useCallback(b => setRunningJob(b ? 'build' : null), [])
+  const onImportBusy = useCallback(b => setRunningJob(b ? 'import' : null), [])
+
   // Mirrors what we've told App: changes the build hasn't picked up yet.
   const [dirty, setDirty] = useState(false)
   const markDirty = () => { setDirty(true); onPendingChange?.(true) }
@@ -2385,20 +2661,24 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
             />
           </div>
         </div>
-        <button onClick={onBackToSearch} title="Skjul panel" style={{
+        <button onClick={onBackToSearch} title="Skjul panel" disabled={!!runningJob} style={{
           border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
-          borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1,
-          flexShrink: 0,
+          borderRadius: 8, width: 28, height: 28, fontSize: 15, lineHeight: 1,
+          flexShrink: 0, cursor: runningJob ? 'not-allowed' : 'pointer',
+          opacity: runningJob ? 0.4 : 1,
         }}>«</button>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+      {/* Hidden while the new-bank form is up: picking a different bank there
+          has no bearing on the one being created. */}
+      {!creatingIndex && (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16, ...lockedWhile(!!runningJob) }}>
         <label htmlFor="admin-index" style={{ fontSize: 13, color: C.textMute }}>Dokumentbank:</label>
         <select
           id="admin-index"
           value={indexName || ''}
           onChange={e => selectIndex(e.target.value)}
-          disabled={creatingIndex || !indexes?.length}
+          disabled={!indexes?.length}
           style={{
             padding: '6px 10px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
             border: `1px solid ${C.border}`, borderRadius: 8,
@@ -2410,10 +2690,9 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
         <span style={{ fontSize: 13, color: C.textFaint }}>
           {entries == null ? '…' : `${entries.length} oppføringer`}
         </span>
-        {!creatingIndex && (
-          <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny dokumentbank</button>
-        )}
+        <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny dokumentbank</button>
       </div>
+      )}
 
       {creatingIndex && (
         <form onSubmit={submitNewIndex} style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
@@ -2478,6 +2757,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
       {!creatingIndex && (
         <>
           <StepSection
+            locked={runningJob === 'build'}
             step={1}
             title="Registrer dokumentene"
             description="Legg til, rediger og slett oppføringer i listen. Her lagres dokumentet og metadataene om det — innholdet blir ikke søkbart før steg 2 er kjørt."
@@ -2492,15 +2772,31 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                   onChange={e => {
                     const picked = Array.from(e.target.files || [])
                     e.target.value = ''
-                    if (picked.length) { setPendingFiles(picked); setAdding(true) }
+                    setPicking(false)
+                    if (picked.length) {
+                      setPendingFiles(picked)
+                      setPickSeq(n => n + 1)
+                      setAdding(true)
+                    }
                   }}
+                  onCancel={() => setPicking(false)}
                 />
-                <button onClick={() => addFilesRef.current?.click()} disabled={adding || !indexName} style={btn.primary}>+ Legg til dokument(er)</button>
+                <button
+                  onClick={() => { setPicking(true); addFilesRef.current?.click() }}
+                  disabled={picking || !indexName}
+                  style={{
+                    ...btn.primary,
+                    ...(picking ? { opacity: 0.7, cursor: 'wait' } : {}),
+                    ...(!indexName ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
+                  }}>
+                  {picking ? <>Åpner filvelger<LoadingDots /></> : '+ Legg til dokument(er)'}
+                </button>
               </div>
             }>
             {adding && (
-              <AddEntryForm server={server} indexName={indexName} entries={entries}
+              <AddEntryForm key={pickSeq} server={server} indexName={indexName} entries={entries}
                 initialFiles={pendingFiles}
+                onBusyChange={onImportBusy}
                 onImported={handleImported}
                 onClose={() => { setAdding(false); setPendingFiles(null) }} />
             )}
@@ -2547,13 +2843,17 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
           </StepSection>
 
           <StepSection
+            locked={runningJob === 'import'}
             step={2}
             title="Bygg dokumentbanken"
             description="Her tas endringene i listen i bruk: nye dokumenter leses, deles opp i tekstbiter og bygges inn i vektorindeksen, og slettede dokumenter fjernes fra den. Først når dette er gjort gjelder listen for analysene."
           >
             <ReindexPanel server={server} indexName={indexName}
+              onBusyChange={onBuildBusy}
               toIngest={unbuiltKeys.size} toPrune={toPrune}
               onDone={() => {
+                setAdding(false)
+                setPendingFiles(null)
                 setDirty(false)
                 onPendingChange?.(false)
                 baselineRef.current = null   // the build commits this list
@@ -2562,7 +2862,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
               }} />
           </StepSection>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4, ...lockedWhile(!!runningJob) }}>
             <button onClick={onBackToSearch} style={btn.ghost} title="Skjul panel">« Tilbake til analyse</button>
           </div>
         </>
@@ -3011,6 +3311,7 @@ export default function App() {
   const [queryTypeDefs, setQueryTypeDefs] = useState({})
   const [filtersOpen, setFiltersOpen]   = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [promptsOpen, setPromptsOpen]   = useState(false)
   const [queryType, setQueryType]       = useState('free')
   // Frozen snapshot of the last-used report type, read once at mount. We can't
   // init queryType from it directly: until the saved index loads, that report
@@ -3042,7 +3343,7 @@ export default function App() {
   }, [queryType])
   const [nPersonas, setNPersonas]       = useState(3)
   const [chunksPerDoc, setChunksPerDoc] = useState(8)
-  const [includeAggregate, setIncludeAggregate] = useState(false)
+  const [includeAggregate, setIncludeAggregate] = useState(true)
 
   const [draft, setDraft]                   = useState({})
   const draftRef                            = useRef({})
@@ -3248,8 +3549,7 @@ export default function App() {
       const body = {
         question: q, query_type: queryType, n_personas: nPersonas,
         chunks_per_doc: chunksPerDoc, index_name: selectedIndexRef.current,
-        // Cross-document syntese is opt-in for strategisk_risiko; other types always aggregate.
-        include_aggregate: queryType === 'strategisk_risiko' ? includeAggregate : true,
+        include_aggregate: includeAggregate,
       }
       if (filtersToSend) body.filters = filtersToSend
 
@@ -3294,7 +3594,11 @@ export default function App() {
             patch({ documents_visited: evt.index + 1 })
           } else if (evt.event === 'result') {
             const items = evt[STRUCTURED_OUTPUT_KEYS[queryType]] || []
-            setStatus(`${evt.documents_visited} dokumenter · ${evt.documents_with_findings} med funn · ${items.length} resultater`)
+            // With the synthesis skipped the item list is empty by design, and
+            // reporting "0 resultater" made a successful run look like a failure.
+            setStatus(evt.aggregated === false
+              ? `${evt.documents_visited} dokumenter · ${evt.documents_with_findings} med funn · analysert per dokument`
+              : `${evt.documents_visited} dokumenter · ${evt.documents_with_findings} med funn · ${items.length} resultater`)
             patch({ ...evt, _loading: false, _type: 'aggregate' })
             saveConversation({
               id: convId, ts: Date.now(), mode: 'aggregate', queryType,
@@ -3337,7 +3641,7 @@ export default function App() {
   }
 
   const placeholder = (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
-    + ' (valgfritt — la stå tomt for å bruke systemprompten)'
+    + ' (valgfritt — la stå tomt for å bruke analysetypens egen instruks)'
 
   return (
     <div style={{
@@ -3370,7 +3674,7 @@ export default function App() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             {indexes.length > 0 && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, ...lockedWhile(loading) }}>
                 <span style={{ fontSize: 12, color: C.textFaint }}>Dokumentbank:</span>
                 <select
                   value={selectedIndex}
@@ -3390,6 +3694,8 @@ export default function App() {
               </div>
             )}
             <button
+              disabled={loading}
+              title={loading ? 'Vent til analysen er ferdig' : undefined}
               onClick={() => {
                 if (view === 'admin') { leaveAdmin(); return }
                 setSidebarOpen(false)
@@ -3483,7 +3789,7 @@ export default function App() {
           </div>
         )}
         {/* Analysetype */}
-        <div style={{ marginBottom: 16 }}>
+        <div style={{ marginBottom: 16, ...lockedWhile(loading) }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
             {availableQueryTypes.map(qt => {
               const active = queryType === qt.key
@@ -3507,29 +3813,52 @@ export default function App() {
               )
             })}
           </div>
-          {queryType === 'strategisk_risiko' && (
-            <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: C.textMute, cursor: 'pointer' }}>
-              <input type="checkbox" checked={includeAggregate} onChange={e => setIncludeAggregate(e.target.checked)} />
-              Aggreger på tvers av dokumenter (longlist) — ellers vises kun analyse per dokument
-            </label>
-          )}
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: 'pointer' }}>
+            <input type="checkbox" checked={includeAggregate} onChange={e => setIncludeAggregate(e.target.checked)} style={{ marginTop: 3 }} />
+            <span>
+              <span style={{ fontSize: 13, color: C.text }}>Slå sammen funn til én liste på tvers av dokumentene</span>
+              <span style={{ display: 'block', fontSize: 12, color: C.textMute, lineHeight: 1.5 }}>
+                Funn som går igjen i flere dokumenter slås sammen til en samlet liste.
+                Uten dette får du kun analysen av hvert dokument for seg — det går raskere.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* Search input — large, prominent */}
         <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 14 }}>
+          <label htmlFor="analysis-question" style={{ ...metaLabel, display: 'block', marginBottom: 6, ...lockedWhile(loading) }}>
+            Spørsmål til dokumentene
+          </label>
           <div style={{ display: 'flex', gap: 10 }}>
-            <input
-              value={question}
-              onChange={e => setQuestion(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
-              placeholder={placeholder}
-              style={{
-                flex: 1, padding: '12px 14px', border: `1px solid ${C.border}`, borderRadius: 10,
-                fontSize: 16, outline: 'none', fontFamily: 'inherit', background: C.bg,
-              }}
-              onFocus={e => e.target.style.borderColor = C.accent}
-              onBlur={e => e.target.style.borderColor = C.border}
-            />
+            <div style={{ flex: 1, position: 'relative', display: 'flex', ...lockedWhile(loading) }}>
+              <span aria-hidden="true" style={{
+                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
+                fontSize: 14, color: C.textFaint, pointerEvents: 'none', lineHeight: 1,
+              }}>✎</span>
+              <input
+                id="analysis-question"
+                value={question}
+                onChange={e => setQuestion(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
+                placeholder={placeholder}
+                style={{
+                  flex: 1, padding: '12px 14px 12px 36px', borderRadius: 10,
+                  border: `1.5px solid ${C.borderHi}`, background: C.surface,
+                  fontSize: 16, outline: 'none', fontFamily: 'inherit', color: C.text,
+                  boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.04)',
+                  transition: 'border-color .12s, box-shadow .12s',
+                }}
+                onFocus={e => {
+                  e.target.style.borderColor = C.accent
+                  e.target.style.boxShadow = `0 0 0 3px ${C.accentSoft}`
+                }}
+                onBlur={e => {
+                  e.target.style.borderColor = C.borderHi
+                  e.target.style.boxShadow = 'inset 0 1px 2px rgba(15,23,42,0.04)'
+                }}
+              />
+            </div>
             <button onClick={() => runQuery()} disabled={loading || health.state !== 'ready'} style={{
               padding: '12px 24px', borderRadius: 10, border: 'none',
               background: loading || health.state !== 'ready' ? '#93C5FD' : C.accent,
@@ -3552,9 +3881,10 @@ export default function App() {
           </div>
 
           {/* Options row: filters + advanced */}
-          <div style={{ display: 'flex', gap: 18, marginTop: 14, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 18, marginTop: 14, flexWrap: 'wrap', ...lockedWhile(loading) }}>
             <SectionToggle open={filtersOpen} onToggle={() => setFiltersOpen(p => !p)} label="Filtre" badge={activeCount} />
-            <SectionToggle open={advancedOpen} onToggle={() => setAdvancedOpen(p => !p)} label="Avansert" />
+            <SectionToggle open={advancedOpen} onToggle={() => setAdvancedOpen(p => !p)} label="Analysedybde" />
+            <SectionToggle open={promptsOpen} onToggle={() => setPromptsOpen(p => !p)} label="Rediger instruksjoner" />
             {status && (
               <div style={{
                 marginLeft: 'auto',
@@ -3584,7 +3914,7 @@ export default function App() {
           )}
           <ActiveFilterTags filters={activeFilters} onRemoveValue={removeValue} />
 
-          {/* Advanced drawer */}
+          {/* Analysedybde drawer */}
           {advancedOpen && (
             <div style={{ marginTop: 14, padding: '14px 16px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10 }}>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 18 }}>
@@ -3593,6 +3923,12 @@ export default function App() {
                 )}
                 <ParamSlider label="Chunks per doc" min={1} max={16} step={1} value={chunksPerDoc} onChange={setChunksPerDoc} format={v => v} info={PARAM_INFO.chunks_per_doc} />
               </div>
+            </div>
+          )}
+
+          {/* Instructions drawer — sits below, as its own thing */}
+          {promptsOpen && (
+            <div style={{ marginTop: 14, padding: '14px 16px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10 }}>
               <PromptsEditor
                 queryType={queryType}
                 defs={queryTypeDefs}
