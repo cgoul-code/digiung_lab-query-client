@@ -87,14 +87,25 @@ function outputKeyFor(queryType) {
   return STRUCTURED_OUTPUT_KEYS[queryType] || 'findings'
 }
 
-// Copy behind the info button next to the «DokumentLab» title. The app runs
-// a single mode — aggregert analyse.
-const AGGREGATE_INFO = {
-  title: 'Aggregert analyse',
+// Copy behind the info button next to the «DokumentLab» title — what the tool
+// does, and the order you do it in.
+const APP_INFO = {
+  title: 'Om DokumentLab',
   paragraphs: [
-    'Aggregert analyse går motsatt vei: i stedet for å plukke ut de beste treffene går den systematisk gjennom dokumentene ett for ett, henter et fast antall tekstbiter fra hvert (innstillingen «Chunks per doc» under «Analysedybde»), kjører en ekstraksjon per dokument etter valgt analysetype — Problemer, Kritiske øyeblikk, Personas, Strategisk risiko og så videre — og syntetiserer deretter funnene på tvers til én strukturert liste.',
-    'Derfor viser resultatet «X dokumenter besøkt · Y med funn»: dekningsgraden er poenget. Analysen tar 1–3 minutter og kan kjøres helt uten spørsmål — da er det analysetypens egen instruks som styrer jobben. Bruk den når du vil vite hva som er gjennomgående i materialet: mønstre, temaer og risikoområder som først blir synlige når man ser alle dokumentene under ett.',
+    'DokumentLab leser gjennom en dokumentsamling systematisk og oppsummerer funn på tvers. Et vanlig søk plukker ut de tekstbitene som ligner mest på spørsmålet ditt; her går analysen i stedet gjennom hvert dokument for seg, henter ut det som er relevant, og slår deretter funnene sammen til én liste. Dekningsgraden er poenget — derfor står det «X dokumenter besøkt · Y med funn» over resultatet.',
+    'To ting styrer hva du får: hvilken dokumentbank du analyserer, og hvilken analysemal du bruker. Dokumentbanken er samlingen av dokumenter. Analysemalen bestemmer hva som skal hentes ut av hvert dokument — problemer, tiltak, risikoområder, eller noe du definerer selv. Begge deler administreres fra panelene du åpner på skinnene til venstre.',
+    'En analyse tar vanligvis 1–3 minutter. Du kan kjøre den uten å skrive noe: da er det analysemalens egen instruks som styrer jobben. Skriver du et spørsmål, spisser det analysen mot akkurat det.',
   ],
+  steps: [
+    { label: 'Velg dokumentbank', text: 'Nedtrekket øverst bestemmer hvilke dokumenter analysen leser. Nye dokumenter legges til under «Administrer dokumenter», og må bygges inn i banken før de er med.' },
+    { label: 'Velg analysemal', text: 'Rutene under nedtrekket viser malene denne banken tilbyr. Er du usikker på hva en mal gjør, åpne «Se instruksjonene» i verktøylinjen — der står teksten analysen faktisk kjører på.' },
+    { label: 'Still et spørsmål (valgfritt)', text: 'La feltet stå tomt for å kjøre malen slik den er. Et spørsmål snevrer analysen inn mot ett tema, uten å begrense hvilke dokumenter som leses.' },
+    { label: 'Juster om nødvendig', text: '«Filtre» begrenser hvilke dokumenter som er med. «Analysedybde» styrer hvor mange tekstbiter som hentes fra hvert dokument. Avkrysningen over søkefeltet avgjør om funnene slås sammen på tvers, eller om du bare vil se hvert dokument for seg.' },
+    { label: 'Kjør analysen', text: 'Klikk «Analyser». Underveis ser du hvilket dokument som behandles og hvor mange som gjenstår. «Avbryt» stopper jobben.' },
+    { label: 'Les resultatet', text: 'Øverst står syntesen på tvers av dokumentene. Under «Analyse per funn» ser du hva hvert dokument bidro med til det enkelte funnet, med sitater og lenker tilbake til kilden.' },
+    { label: 'Ta vare på den', text: '«Last ned rapport (.docx)» gir hele analysen som dokument. Kjøringen lagres også i samtaleloggen til venstre, så du kan hente den fram igjen senere.' },
+  ],
+  footnote: 'Et dokument er ikke med i analysen før det er bygget inn i dokumentbanken. Rader merket IKKE BYGGET venter på steg 2 i «Administrer dokumenter».',
 }
 
 // Copy for the info buttons on the sliders in the «Analysedybde» drawer.
@@ -731,6 +742,27 @@ function RiskItem({ item }) {
 // hidden: you can still read what's there, it just can't be clicked.
 function lockedWhile(locked) {
   return locked ? { pointerEvents: 'none', opacity: 0.4, userSelect: 'none' } : null
+}
+
+// A server that is still loading its indexes refuses connections outright, so
+// the fetch throws rather than returning a status. Both that and a 502/503/504
+// mean «not up yet» — worth waiting for, unlike a 404 or a 400.
+async function fetchWithRetry(url, options, { attempts = 5, onWait } = {}) {
+  let delay = 800
+  for (let i = 1; i <= attempts; i++) {
+    let res = null
+    try {
+      res = await fetch(url, options)
+      if (res.status !== 502 && res.status !== 503 && res.status !== 504) return res
+    } catch (e) {
+      if (i === attempts) throw e
+    }
+    if (i === attempts) return res
+    onWait?.(i, attempts)
+    await new Promise(r => setTimeout(r, delay))
+    delay = Math.min(delay * 2, 6000)
+  }
+  return null
 }
 
 function normTitle(s) {
@@ -1424,6 +1456,21 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
                     Sletter<LoadingDots />
                   </span>
                 )}
+                {!deleting && !entry.url && (() => {
+                  // The stored copy, not the original source: this is the file
+                  // the analysis actually reads.
+                  const src = `${server.replace(/\/$/, '')}/admin/file`
+                    + `?index_name=${encodeURIComponent(indexName)}&key=${encodeURIComponent(key)}`
+                  return (
+                    <>
+                      <button onClick={() => window.open(src, '_blank', 'noopener')} disabled={busy} style={btn.ghost}
+                        title="Åpne dokumentet i nettleseren">Åpne ↗</button>
+                      <a href={`${src}&download=1`} download
+                        style={{ ...btn.ghost, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+                        title="Last ned dokumentet">↓ Last ned</a>
+                    </>
+                  )
+                })()}
                 {!deleting && entry.url && (
                   <>
                     <button onClick={() => window.open(entry.url, '_blank', 'noopener')} disabled={busy} style={btn.ghost}
@@ -1527,12 +1574,41 @@ function AddEntryForm({ server, indexName, entries, initialFiles, onImported, on
   )
 }
 
-function ReindexPanel({ server, indexName, onDone, onBusyChange, toIngest = 0, toPrune = 0 }) {
+function ReindexPanel({ server, indexName, onDone, onBusyChange, onRepaired, toIngest = 0, toPrune = 0 }) {
   const [job, setJob] = useState(null)  // {status, events[]}
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [docFilter, setDocFilter] = useState('all')   // 'all' | 'new' | 'skipped' | 'failed'
   const [interrupted, setInterrupted] = useState(false)
+
+  // Repairing the ingest manifest: a bank built before the manifest existed has
+  // a full index and no record of it, so everything reads as unbuilt and an
+  // update would re-embed the lot. This writes the record from what the index
+  // already holds. It only ever adds, so it cannot mask real work.
+  const [repairing, setRepairing] = useState(false)
+  const [repairMsg, setRepairMsg] = useState('')
+
+  const repairManifest = async () => {
+    setRepairing(true); setRepairMsg(''); setErr('')
+    try {
+      const res = await fetch(
+        `${server.replace(/\/$/, '')}/admin/reindex/backfill-manifest?index_name=${encodeURIComponent(indexName)}`,
+        { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      const left = (data.still_unbuilt || []).length
+      setRepairMsg(
+        data.added > 0
+          ? `Registrerte ${data.added} dokument(er) som allerede lå i dokumentbanken.${left ? ` ${left} er fortsatt ubygget.` : ''}`
+          : data.recorded > 0
+            ? `Bokføringen stemte allerede — ${data.recorded} dokument(er) var registrert fra før.`
+            : 'Fant ingen av dokumentene i den bygde indeksen. De må bygges inn.'
+      )
+      await onRepaired?.()
+    } catch (e) {
+      setErr(`Kunne ikke reparere manifestet: ${e.message}`)
+    } finally { setRepairing(false) }
+  }
   const pollTimer = useRef(null)
   const eventCountRef = useRef(0)  // cumulative events received — used as poll cursor
   const storageKey = `digiung_lab:reindex_job:${indexName}`
@@ -1780,9 +1856,26 @@ function ReindexPanel({ server, indexName, onDone, onBusyChange, toIngest = 0, t
           <button onClick={() => start('full')} disabled={busy} style={btn.ghost}>
             Bygg dokumentbanken på nytt
           </button>
+          <button
+            onClick={repairManifest}
+            disabled={busy || repairing || !indexName}
+            title="Registrer dokumenter som allerede ligger i dokumentbanken, men som mangler i bokføringen"
+            style={{ ...btn.ghost, ...(busy || repairing || !indexName ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+            {repairing ? <>Reparerer<LoadingDots /></> : 'Reparer manifest'}
+          </button>
           <InfoButton title={REINDEX_INFO.title} paragraphs={REINDEX_INFO.paragraphs} align="right" />
         </div>
       </div>
+
+      {repairMsg && (
+        <div style={{
+          marginTop: 12, padding: '9px 12px', borderRadius: 8,
+          background: C.successBg, border: `1px solid ${C.border}`,
+          fontSize: 12.5, color: C.textMute, lineHeight: 1.6,
+        }}>
+          {repairMsg}
+        </div>
+      )}
 
       {err && <div style={{ fontSize: 12, color: C.danger, marginTop: 10 }}>{err}</div>}
 
@@ -2300,20 +2393,13 @@ function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported,
 // A wait long enough to look broken deserves an explanation. The elapsed
 // counter shows something is still happening, and after a few seconds the
 // likely reason is named rather than left to guesswork.
-function ListLoading({ compact }) {
+function ListLoading() {
   const [secs, setSecs] = useState(0)
   useEffect(() => {
     const id = setInterval(() => setSecs(s => s + 1), 1000)
     return () => clearInterval(id)
   }, [])
 
-  if (compact) {
-    return (
-      <span style={{ color: C.accent, fontWeight: 500 }}>
-        Henter liste<LoadingDots />{secs >= 3 ? ` ${secs}s` : ''}
-      </span>
-    )
-  }
   return (
     <div style={{ padding: '1.75rem 1.5rem', textAlign: 'center' }}>
       <div style={{ fontSize: 14, color: C.text, fontWeight: 600, display: 'inline-flex', alignItems: 'center' }}>
@@ -2619,6 +2705,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const [unbuiltKeys, setUnbuiltKeys] = useState(() => new Set())
   const [toPrune, setToPrune] = useState(0)
   const [listLoading, setListLoading] = useState(true)
+  const [waiting, setWaiting] = useState('')
 
   const [seedOpen, setSeedOpen] = useState(false)
 
@@ -2655,8 +2742,9 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
     if (!indexName) { setUnbuiltKeys(new Set()); setToPrune(0); return }
     try {
       const base = server.replace(/\/$/, '')
-      const res = await fetch(`${base}/admin/reindex/pending?index_name=${encodeURIComponent(indexName)}`)
-      if (!res.ok) return
+      const res = await fetchWithRetry(
+        `${base}/admin/reindex/pending?index_name=${encodeURIComponent(indexName)}`)
+      if (!res?.ok) return
       const data = await res.json()
       setUnbuiltKeys(new Set(data.to_ingest || []))
       setToPrune(data.to_prune || 0)
@@ -2668,10 +2756,15 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
     // than leaving the previous bank's rows on screen.
     if (!indexName) { setEntries([]); setListLoading(false); setErr(''); return }
     setErr('')
+    setWaiting('')
     setListLoading(true)
     try {
       const base = server.replace(/\/$/, '')
-      const res = await fetch(`${base}/admin/entries?index_name=${encodeURIComponent(indexName)}`)
+      const res = await fetchWithRetry(
+        `${base}/admin/entries?index_name=${encodeURIComponent(indexName)}`,
+        undefined,
+        { onWait: (i, n) => setWaiting(`Får ikke kontakt med serveren — prøver igjen (${i}/${n})…`) },
+      )
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || res.statusText)
       const list = data.entries || []
@@ -2679,7 +2772,16 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
       // restores it, so the panel behaves like an edit session you can discard.
       if (baselineRef.current === null) baselineRef.current = list
       setEntries(list)
-    } catch (e) { setErr(e.message); setEntries([]) }
+      setWaiting('')
+    } catch (e) {
+      // The browser's own wording for an unreachable host says nothing useful.
+      const offline = e instanceof TypeError
+      setErr(offline
+        ? 'Får ikke kontakt med serveren. Den kan fortsatt være i ferd med å starte — prøv igjen om litt.'
+        : e.message)
+      setEntries([])
+      setWaiting('')
+    }
     finally { setListLoading(false) }
   }, [server, indexName])
 
@@ -2886,7 +2988,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
           {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
         </select>
         <span style={{ fontSize: 13, color: C.textFaint }}>
-          {listLoading ? <ListLoading compact /> : `${entries?.length ?? 0} oppføringer`}
+          {entries == null ? '' : `${entries.length} oppføringer`}
         </span>
         <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny dokumentbank</button>
         <button
@@ -3084,7 +3186,20 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                 onClose={() => { setAdding(false); setPendingFiles(null) }} />
             )}
 
-            {err && <div style={{ ...card, padding: '0.75rem 1rem', marginBottom: 12, color: C.danger, fontSize: 13 }}>Feil ved lasting: {err}</div>}
+            {waiting && !err && (
+              <div style={{
+                ...card, padding: '0.75rem 1rem', marginBottom: 12,
+                fontSize: 13, color: C.textMute, display: 'flex', alignItems: 'center', gap: 8,
+              }}>
+                <LoadingDots />{waiting}
+              </div>
+            )}
+            {err && (
+              <div style={{ ...card, padding: '0.75rem 1rem', marginBottom: 12, fontSize: 13, color: C.danger, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span>Feil ved lasting: {err}</span>
+                <button onClick={load} style={btn.ghost}>Prøv igjen</button>
+              </div>
+            )}
 
             <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '10px 14px', background: C.bg, borderBottom: `1px solid ${C.border}`,
@@ -3142,6 +3257,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
           >
             <ReindexPanel server={server} indexName={indexName}
               onBusyChange={onBuildBusy}
+              onRepaired={refreshPending}
               toIngest={unbuiltKeys.size} toPrune={toPrune}
               onDone={() => {
                 setAdding(false)
@@ -4432,7 +4548,12 @@ export default function App() {
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ fontSize: 16, fontWeight: 600, color: C.text, lineHeight: 1.2 }}>DokumentLab</div>
-                <InfoButton title={AGGREGATE_INFO.title} paragraphs={AGGREGATE_INFO.paragraphs} />
+                <InfoButton
+                  title={APP_INFO.title}
+                  paragraphs={APP_INFO.paragraphs}
+                  steps={APP_INFO.steps}
+                  footnote={APP_INFO.footnote}
+                />
               </div>
               <div style={{ fontSize: 12, color: C.textFaint, lineHeight: 1.2 }}>Analyser dokumenter med AI</div>
             </div>
