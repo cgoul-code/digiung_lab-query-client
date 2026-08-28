@@ -2321,6 +2321,38 @@ function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported,
 // list, and only becomes searchable once the dokumentbank is rebuilt. The
 // numbered sections — badge plus a connecting rail down the left — keep that
 // order visible instead of leaving it to the help text.
+// A wait long enough to look broken deserves an explanation. The elapsed
+// counter shows something is still happening, and after a few seconds the
+// likely reason is named rather than left to guesswork.
+function ListLoading({ compact }) {
+  const [secs, setSecs] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setSecs(s => s + 1), 1000)
+    return () => clearInterval(id)
+  }, [])
+
+  if (compact) {
+    return (
+      <span style={{ color: C.accent, fontWeight: 500 }}>
+        Henter liste<LoadingDots />{secs >= 3 ? ` ${secs}s` : ''}
+      </span>
+    )
+  }
+  return (
+    <div style={{ padding: '1.75rem 1.5rem', textAlign: 'center' }}>
+      <div style={{ fontSize: 14, color: C.text, fontWeight: 600, display: 'inline-flex', alignItems: 'center' }}>
+        Henter dokumentlisten<LoadingDots />
+      </div>
+      {secs >= 3 && (
+        <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 8, lineHeight: 1.6, maxWidth: 460, margin: '8px auto 0' }}>
+          {secs}s. Rett etter en bygging laster serveren fortsatt opp dokumentbanken,
+          og listen må vente på tur. Den kommer så snart opplastingen er ferdig.
+        </div>
+      )}
+    </div>
+  )
+}
+
 function StepSection({ step, title, description, action, children, locked }) {
   return (
     <section style={{ marginBottom: 24 }} aria-busy={locked || undefined}>
@@ -2344,7 +2376,7 @@ function StepSection({ step, title, description, action, children, locked }) {
   )
 }
 
-function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onPendingChange, registerRollback }) {
+function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onPendingChange, onBusyChange, registerRollback }) {
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
   const [adding, setAdding] = useState(false)
@@ -2457,6 +2489,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   // "unchanged".
   const [unbuiltKeys, setUnbuiltKeys] = useState(() => new Set())
   const [toPrune, setToPrune] = useState(0)
+  const [listLoading, setListLoading] = useState(true)
 
   const refreshPending = useCallback(async () => {
     if (!indexName) return
@@ -2473,6 +2506,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const load = useCallback(async () => {
     if (!indexName) return
     setErr('')
+    setListLoading(true)
     try {
       const base = server.replace(/\/$/, '')
       const res = await fetch(`${base}/admin/entries?index_name=${encodeURIComponent(indexName)}`)
@@ -2484,6 +2518,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
       if (baselineRef.current === null) baselineRef.current = list
       setEntries(list)
     } catch (e) { setErr(e.message); setEntries([]) }
+    finally { setListLoading(false) }
   }, [server, indexName])
 
   // Switching bank starts a fresh session: the snapshot below belongs to one
@@ -2609,6 +2644,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const [runningJob, setRunningJob] = useState(null)
   const onBuildBusy  = useCallback(b => setRunningJob(b ? 'build' : null), [])
   const onImportBusy = useCallback(b => setRunningJob(b ? 'import' : null), [])
+  useEffect(() => { onBusyChange?.(!!runningJob) }, [runningJob, onBusyChange])
 
   // Mirrors what we've told App: changes the build hasn't picked up yet.
   const [dirty, setDirty] = useState(false)
@@ -2688,7 +2724,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
           {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
         </select>
         <span style={{ fontSize: 13, color: C.textFaint }}>
-          {entries == null ? '…' : `${entries.length} oppføringer`}
+          {listLoading ? <ListLoading compact /> : `${entries?.length ?? 0} oppføringer`}
         </span>
         <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny dokumentbank</button>
       </div>
@@ -2812,8 +2848,17 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                 <div>År</div>
                 <div style={{ textAlign: 'right' }}>Handling</div>
               </div>
+              {listLoading && entries != null && (
+                <div style={{
+                  padding: '8px 14px', borderBottom: `1px solid ${C.border}`,
+                  background: C.accentBg, fontSize: 12.5, color: C.accent, fontWeight: 500,
+                  display: 'flex', alignItems: 'center',
+                }}>
+                  Oppdaterer listen<LoadingDots />
+                </div>
+              )}
               {entries == null ? (
-                <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Laster…</div>
+                <ListLoading />
               ) : entries.length === 0 ? (
                 <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Ingen oppføringer ennå.</div>
               ) : (
@@ -3159,11 +3204,15 @@ export default function App() {
   // Set while the document list holds changes step 2 hasn't built in yet. Lives
   // here rather than in AdminView so it survives switching to search and back.
   const [adminPending, setAdminPending] = useState(false)
+  // A build or import is running in the panel. Leaving would discard the list
+  // changes the job is in the middle of committing.
+  const [adminBusy, setAdminBusy] = useState(false)
   // AdminView hands us its undo function so the confirm below can discard the
   // session's changes before the panel goes away.
   const adminRollbackRef = useRef(null)
   const registerRollback = useCallback((fn) => { adminRollbackRef.current = fn }, [])
   const leaveAdmin = useCallback(async () => {
+    if (adminBusy) return
     if (adminPending) {
       if (!window.confirm(
         'Dokumentlisten er endret uten at dokumentbanken er oppdatert.\n\n'
@@ -3175,7 +3224,7 @@ export default function App() {
       setAdminPending(false)
     }
     setView('search')
-  }, [adminPending])
+  }, [adminPending, adminBusy])
   const [themeName, setThemeName]       = useState(() => {
     try {
       const saved = window.localStorage.getItem(THEME_STORAGE_KEY)
@@ -3694,8 +3743,9 @@ export default function App() {
               </div>
             )}
             <button
-              disabled={loading}
-              title={loading ? 'Vent til analysen er ferdig' : undefined}
+              disabled={loading || adminBusy}
+              title={loading ? 'Vent til analysen er ferdig'
+                : adminBusy ? 'Vent til jobben i panelet er ferdig' : undefined}
               onClick={() => {
                 if (view === 'admin') { leaveAdmin(); return }
                 setSidebarOpen(false)
@@ -3703,7 +3753,9 @@ export default function App() {
               }}
               style={{
                 padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.border}`,
-                background: view === 'admin' ? C.accentBg : C.surface, cursor: 'pointer', fontSize: 13,
+                background: view === 'admin' ? C.accentBg : C.surface, fontSize: 13,
+                cursor: (loading || adminBusy) ? 'not-allowed' : 'pointer',
+                opacity: (loading || adminBusy) ? 0.5 : 1,
                 color: view === 'admin' ? C.accent : C.textMute, fontFamily: 'inherit', fontWeight: 500,
               }}
             >Administrer dokumenter</button>
@@ -3747,6 +3799,7 @@ export default function App() {
             }}
             onBackToSearch={leaveAdmin}
             onPendingChange={setAdminPending}
+            onBusyChange={setAdminBusy}
             registerRollback={registerRollback}
             onIndexCreated={(name) => {
               setIndexes(prev => prev.includes(name) ? prev : [...prev, name].sort())
