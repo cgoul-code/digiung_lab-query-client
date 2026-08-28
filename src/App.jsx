@@ -108,6 +108,25 @@ const APP_INFO = {
   footnote: 'Et dokument er ikke med i analysen før det er bygget inn i dokumentbanken. Rader merket IKKE BYGGET venter på steg 2 i «Administrer dokumenter».',
 }
 
+// Output language for the analysis. The codes match LANGUAGES in the server's
+// aggregate_workflow.py, which turns the code into a directive on the prompts —
+// so this applies to every query type, not just the free one.
+const LANGUAGES = [
+  { code: 'no', label: 'Norwegian (Bokmål)' },
+  { code: 'nn', label: 'Norwegian (Nynorsk)' },
+  { code: 'en', label: 'English' },
+  { code: 'sv', label: 'Swedish' },
+  { code: 'da', label: 'Danish' },
+  { code: 'de', label: 'German' },
+  { code: 'fr', label: 'French' },
+  { code: 'es', label: 'Spanish' },
+  { code: 'it', label: 'Italian' },
+  { code: 'pl', label: 'Polish' },
+  { code: 'ar', label: 'Arabic' },
+  { code: 'so', label: 'Somali' },
+  { code: 'uk', label: 'Ukrainian' },
+]
+
 // Copy for the info buttons on the sliders in the «Analysedybde» drawer.
 const PARAM_INFO = {
   chunks_per_doc: [
@@ -839,6 +858,7 @@ function FindingSource({ source, entry }) {
 // it. Shared by all analysis types — only the shape of what each document
 // contributed differs, and FindingSource absorbs that.
 function FindingsBreakdown({ items, perDoc }) {
+  const [open, setOpen] = useState(false)
   const byTitle = new Map()
   for (const e of perDoc) {
     const k = normTitle(e.tittel || e.filename)
@@ -858,13 +878,19 @@ function FindingsBreakdown({ items, perDoc }) {
     <>
       {/* A hard break: everything below is evidence for what's above. */}
       <div style={{ marginTop: 22, paddingTop: 18, borderTop: `3px solid ${C.borderHi}` }}>
-        <div style={heading}>Analyse per funn</div>
-        <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 2, marginBottom: 2 }}>
+        <div
+          onClick={() => setOpen(o => !o)}
+          style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}
+        >
+          <Chevron open={open} />
+          <div style={heading}>Analyse per funn ({items.length})</div>
+        </div>
+        <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 2, marginBottom: 2, paddingLeft: 19 }}>
           Hva som er trukket ut av hvert dokument bak det enkelte funnet.
         </div>
-        {items.length === 0
+        {open && (items.length === 0
           ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen funn å bryte ned.</div>
-          : items.map((item, i) => <FindingDetail key={i} item={item} byTitle={byTitle} />)}
+          : items.map((item, i) => <FindingDetail key={i} item={item} byTitle={byTitle} />))}
       </div>
       {leftovers.length > 0 && (
         <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.border}` }}>
@@ -4225,6 +4251,7 @@ export default function App() {
   const [nPersonas, setNPersonas]       = useState(3)
   const [chunksPerDoc, setChunksPerDoc] = useState(8)
   const [includeAggregate, setIncludeAggregate] = useState(true)
+  const [language, setLanguage] = useState('no')
 
   const [draft, setDraft]                   = useState({})
   const draftRef                            = useRef({})
@@ -4431,6 +4458,7 @@ export default function App() {
         question: q, query_type: queryType, n_personas: nPersonas,
         chunks_per_doc: chunksPerDoc, index_name: selectedIndexRef.current,
         include_aggregate: includeAggregate,
+        language,
       }
       if (filtersToSend) body.filters = filtersToSend
 
@@ -4725,9 +4753,23 @@ export default function App() {
 
         {/* Search input — large, prominent */}
         <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 14 }}>
-          <label htmlFor="analysis-question" style={{ ...metaLabel, display: 'block', marginBottom: 6, ...lockedWhile(loading) }}>
-            Spørsmål til dokumentene
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 6, ...lockedWhile(loading) }}>
+            <label htmlFor="analysis-question" style={{ ...metaLabel }}>Spørsmål til dokumentene</label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <label htmlFor="analysis-language" style={{ ...metaLabel }}>Svarspråk</label>
+              <select
+                id="analysis-language"
+                value={language}
+                onChange={e => setLanguage(e.target.value)}
+                style={{
+                  padding: '4px 8px', borderRadius: 8,
+                  border: `1px solid ${C.borderHi}`, background: C.surface,
+                  fontSize: 12.5, color: C.text, fontFamily: 'inherit', cursor: 'pointer',
+                }}>
+                {LANGUAGES.map(l => <option key={l.code} value={l.code}>{l.label}</option>)}
+              </select>
+            </div>
+          </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1, position: 'relative', display: 'flex', ...lockedWhile(loading) }}>
               <span aria-hidden="true" style={{
