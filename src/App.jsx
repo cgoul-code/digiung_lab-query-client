@@ -24,7 +24,7 @@ const FILTER_FIELDS = [
 
 // Each query type can declare which indexes it applies to. An empty/missing
 // `indexes` list means the type is available for every index.
-const QUERY_TYPES = [
+const BUILTIN_QUERY_TYPES = [
   { key: 'problems', label: 'Problemer',         description: 'Hvilke problemer sliter unge med?',          indexes: ['DigiUng_lab'] },
   { key: 'moments',  label: 'Kritiske øyeblikk', description: 'Vendepunkter i unges liv',                   indexes: ['DigiUng_lab'] },
   { key: 'personas', label: 'Personas',          description: 'Syntetiser personas basert på funn',         indexes: ['DigiUng_lab'] },
@@ -36,6 +36,26 @@ const QUERY_TYPES = [
   // and becomes active for any index whose saved selection includes it.
   { key: 'who_kode', label: 'WHO-kode compliance', description: 'Regelverkssjekk: Tillatt/Ikke tillatt + begrunnelse + henvisning til artikkel/resolusjon/BFHI-trinn', indexes: ['__who_kode__'] },
 ]
+
+// The live list: built-ins plus whatever has been defined on the server. Kept as
+// a mutated module array — the same trick the theme object C uses — so the many
+// call sites that read it during render pick up additions without every one of
+// them having to take a new prop.
+const QUERY_TYPES = [...BUILTIN_QUERY_TYPES]
+
+function registerQueryTypes(defs) {
+  const custom = Object.entries(defs || {})
+    .filter(([, cfg]) => cfg && cfg.custom)
+    .map(([key, cfg]) => ({
+      key,
+      label: cfg.label || key,
+      description: cfg.description || '',
+      custom: true,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'no'))
+  QUERY_TYPES.length = 0
+  QUERY_TYPES.push(...BUILTIN_QUERY_TYPES, ...custom)
+}
 
 // An admin can pin an explicit set of analysetyper to an index at creation time
 // (persisted server-side as { indexName: [keys] }). When such a list exists it
@@ -53,12 +73,18 @@ function queryTypesForIndex(indexName, overrideMap) {
 
 // Analysetyper available everywhere (no `indexes` restriction). Used as the
 // default selection when creating a new index.
-const DEFAULT_QUERY_TYPE_KEYS = QUERY_TYPES.filter(qt => !qt.indexes?.length).map(qt => qt.key)
+function defaultQueryTypeKeys() {
+  return QUERY_TYPES.filter(qt => !qt.indexes?.length).map(qt => qt.key)
+}
 
 // query_type values that produce the structured analysekjede output.
 const STRUCTURED_OUTPUT_KEYS = {
   problems: 'problems', moments: 'moments', personas: 'personas',
   free: 'findings', strategisk_risiko: 'risikoomrader', who_kode: 'findings',
+}
+// Anything defined at runtime runs on the free-analysis machinery.
+function outputKeyFor(queryType) {
+  return STRUCTURED_OUTPUT_KEYS[queryType] || 'findings'
 }
 
 // Copy behind the info button next to the «DokumentLab» title. The app runs
@@ -86,7 +112,7 @@ const ADD_DOC_HELP = {
     'Å legge til et dokument skjer i to steg, slik skjermbildet er delt opp: først registreres dokumentet med metadata (steg 1), deretter bygges innholdet inn i dokumentbanken slik at det blir søkbart (steg 2).',
   ],
   steps: [
-    { label: 'Velg dokumentbank', text: 'Velg riktig dokumentbank i nedtrekket «Dokumentbank» øverst, og klikk «Administrer dokumenter». Alt du legger til havner i den dokumentbanken som står der.' },
+    { label: 'Velg dokumentbank', text: 'Åpne «Administrer dokumenter» fra skinnen til venstre, og velg riktig bank i nedtrekket «Dokumentbank» øverst i panelet. Alt du legger til havner i den banken som står der.' },
     { label: 'Åpne skjemaet', text: 'Klikk «+ Legg til dokument(er)» til høyre i steg 1.' },
     { label: 'Velg filer', text: 'Filvelgeren åpnes med en gang. Merk én eller flere PDF-, DOCX- eller PPTX-filer — hold Ctrl eller Shift for å merke flere, eller Ctrl+A for alt i mappen. Ett dokument behandles akkurat som mange.' },
     { label: 'Se over utvalget', text: 'Listen viser hva som legges til, med størrelse per fil. Ta bort haken på det du ikke vil ha med. Dokumenter som allerede ligger i listen filtreres bort automatisk og røres ikke.' },
@@ -911,7 +937,6 @@ const PROMPT_FIELDS = [
     hint: 'Fast mal som sender de innsamlede funnene inn i oppsummeringen.',
   },
 ]
-const EDITABLE_PROMPT_FIELDS = PROMPT_FIELDS.filter(f => f.editable)
 
 // A textarea that grows with its content, so a long instruction isn't read
 // through a four-line slot.
@@ -929,94 +954,44 @@ function AutoTextarea({ value, onChange, readOnly, ...rest }) {
 // Body only — the toggle lives in the toolbar next to Filtre and Analysedybde,
 // so editing the instructions is its own choice rather than something buried
 // under a settings drawer.
-function PromptsEditor({ queryType, defs, server, onSaved }) {
-  const [draft, setDraft] = useState({})
-  const [busy, setBusy] = useState(false)
-  const [msg, setMsg] = useState('')
-  const [msgErr, setMsgErr] = useState(false)
+// Read-only view of what the selected analysetype is instructed to do.
+// Editing lives in «Administrer analysemaler» — one editing surface for one set
+// of fields, so a saved change can't leave a second view showing stale text.
+function PromptsViewer({ queryType, defs }) {
   const cfg = defs[queryType]
-
-  // Reset local edits whenever the type or its loaded prompts change.
-  useEffect(() => { setDraft({}); setMsg('') }, [queryType, cfg])
-
   if (!cfg) return null
 
-  const valueOf = (key) => (draft[key] !== undefined ? draft[key] : (cfg[key] || ''))
-  const dirty = EDITABLE_PROMPT_FIELDS.some(f => draft[f.key] !== undefined && draft[f.key] !== (cfg[f.key] || ''))
-  const base = server.replace(/\/$/, '')
-
-  const save = async () => {
-    setBusy(true); setMsg(''); setMsgErr(false)
-    try {
-      // The locked templates are sent back unchanged: the endpoint stores the
-      // whole set, and omitting them would wipe them.
-      const body = {}
-      PROMPT_FIELDS.forEach(f => { body[f.key] = valueOf(f.key) })
-      const res = await fetch(`${base}/admin/query-types/${queryType}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      })
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText) }
-      setDraft({}); setMsg('Lagret'); onSaved && await onSaved()
-    } catch (e) { setMsgErr(true); setMsg(`Feil: ${e.message}`) } finally { setBusy(false) }
-  }
-
-  const reset = async () => {
-    setBusy(true); setMsg(''); setMsgErr(false)
-    try {
-      const res = await fetch(`${base}/admin/query-types/${queryType}`, { method: 'DELETE' })
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.statusText) }
-      setDraft({}); setMsg('Tilbakestilt til standard'); onSaved && await onSaved()
-    } catch (e) { setMsgErr(true); setMsg(`Feil: ${e.message}`) } finally { setBusy(false) }
-  }
-
   return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {PROMPT_FIELDS.map(({ key, label, hint, editable }) => (
-            <div key={key}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                <span style={{ ...metaLabel }}>{label}</span>
-                {!editable && <Tag tone="neutral">FAST</Tag>}
-              </div>
-              {hint && <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>{hint}</div>}
-              <AutoTextarea
-                value={valueOf(key)}
-                onChange={editable ? (e => setDraft(d => ({ ...d, [key]: e.target.value }))) : undefined}
-                readOnly={!editable}
-                spellCheck={false}
-                style={{
-                  // Height is managed, so a manual resize would only clip text.
-                  width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
-                  padding: '8px 12px', borderRadius: 8, fontSize: 12,
-                  border: `1px solid ${C.border}`, fontFamily: 'monospace',
-                  lineHeight: 1.5, outline: 'none',
-                  // Editable boxes read as paper; the locked templates stay flat
-                  // against the panel so the difference is visible at a glance.
-                  background: editable ? C.surface : C.bg,
-                  color: editable ? C.text : C.textMute,
-                  cursor: editable ? 'text' : 'default',
-                }}
-                onFocus={editable ? (e => e.target.style.borderColor = C.accent) : undefined}
-                onBlur={editable ? (e => e.target.style.borderColor = C.border) : undefined}
-              />
-            </div>
-          ))}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <button onClick={save} disabled={busy || !dirty} style={{
-              padding: '8px 16px', borderRadius: 8, border: 'none',
-              background: busy || !dirty ? '#93C5FD' : C.accent, color: '#fff',
-              cursor: busy || !dirty ? 'not-allowed' : 'pointer', fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
-            }}>Lagre</button>
-            <button onClick={reset} disabled={busy} style={{
-              padding: '8px 16px', borderRadius: 8, border: `1px solid ${C.border}`,
-              background: C.surface, color: C.textMute, cursor: busy ? 'not-allowed' : 'pointer',
-              fontSize: 13, fontWeight: 500, fontFamily: 'inherit',
-            }}>Tilbakestill til standard</button>
-            {msg && <span style={{ fontSize: 12, color: msgErr ? C.danger : C.success }}>{msg}</span>}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {PROMPT_FIELDS.map(({ key, label, hint, editable }) => (
+        <div key={key}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+            <span style={{ ...metaLabel }}>{label}</span>
+            {!editable && <Tag tone="neutral">FAST</Tag>}
           </div>
-          <div style={{ fontSize: 11, color: C.textFaint }}>
-            Endringer lagres på serveren og brukes ved neste analyse. Malene merket FAST kan ikke endres — plassholderne i dem ({'{context}'}, {'{all_findings}'}) er det som gir analysen noe å lese.
-          </div>
+          {hint && <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>{hint}</div>}
+          <AutoTextarea
+            value={cfg[key] || ''}
+            readOnly
+            spellCheck={false}
+            style={{
+              // Height is managed, so a manual resize would only clip text.
+              width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+              padding: '8px 12px', borderRadius: 8, fontSize: 12,
+              border: `1px solid ${C.border}`, fontFamily: 'monospace',
+              lineHeight: 1.5, outline: 'none',
+              background: C.bg, color: C.textMute, cursor: 'default',
+            }}
+          />
         </div>
+      ))}
+      <div style={{ fontSize: 11, color: C.textFaint, lineHeight: 1.6 }}>
+        Instruksjonene endres i «Administrer analysemaler» — åpne panelet fra
+        skinnen til venstre. Malene merket FAST kan ikke endres noe sted;
+        plassholderne i dem ({'{context}'}, {'{all_findings}'}) er det som gir
+        analysen noe å lese.
+      </div>
+    </div>
   )
 }
 
@@ -1037,8 +1012,9 @@ function ProgressBar({ index, total, tittel, nodeMessage }) {
 }
 
 function AggregateResultCard({ data }) {
-  const qt = QUERY_TYPES.find(q => q.key === data.query_type) || QUERY_TYPES[0]
-  const items = data[STRUCTURED_OUTPUT_KEYS[data.query_type]] || []
+  const qt = QUERY_TYPES.find(q => q.key === data.query_type)
+    || { key: data.query_type, label: data.query_type || 'Analyse' }
+  const items = data[outputKeyFor(data.query_type)] || []
   const isLoading = data._loading
   const isRisk = data.query_type === 'strategisk_risiko'
   const perDoc = data.per_doc_findings || []
@@ -2376,7 +2352,160 @@ function StepSection({ step, title, description, action, children, locked }) {
   )
 }
 
-function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onPendingChange, onBusyChange, registerRollback }) {
+// Pull reports that already exist in other banks into this one. The catalogue
+// entry carries the whole document_store record, so posting it as JSON reuses
+// the file on disk — nothing is uploaded twice, and the same document can serve
+// several banks.
+function AddExistingReports({ server, indexName, entries, onAdded, onClose }) {
+  const [reports, setReports]   = useState(null)
+  const [selected, setSelected] = useState(() => new Set())
+  const [search, setSearch]     = useState('')
+  const [busy, setBusy]         = useState(false)
+  const [progress, setProgress] = useState({ done: 0, total: 0 })
+  const [result, setResult]     = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const base = server.replace(/\/$/, '')
+    fetch(`${base}/admin/reports`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(d => { if (!cancelled) setReports(d.reports || []) })
+      .catch(() => { if (!cancelled) setReports([]) })
+    return () => { cancelled = true }
+  }, [server])
+
+  // The catalogue keys on url-or-basename; match the bank's own entries the
+  // same way so what's already here is filtered out rather than offered again.
+  const already = useMemo(() => {
+    const set = new Set()
+    for (const e of entries || []) {
+      const k = e.url || (e.filnavn || '').replace(/\\/g, '/').split('/').pop()
+      if (k) set.add(k.toLowerCase())
+    }
+    return set
+  }, [entries])
+
+  const available = useMemo(
+    () => (reports || []).filter(r => !already.has((r.key || '').toLowerCase())),
+    [reports, already])
+
+  const chosen = available.filter(r => selected.has(r.key))
+  const urlCount = chosen.filter(r => r.kind === 'url').length
+
+  const add = async () => {
+    setBusy(true)
+    setProgress({ done: 0, total: chosen.length })
+    const base = server.replace(/\/$/, '')
+    const added = []
+    const failed = []
+    let skipped = 0
+    for (let i = 0; i < chosen.length; i++) {
+      setProgress({ done: i, total: chosen.length })
+      const r = chosen[i]
+      try {
+        const res = await fetch(`${base}/admin/entries?index_name=${encodeURIComponent(indexName)}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(r.entry),
+        })
+        const data = await res.json().catch(() => ({}))
+        if (res.status === 409) { skipped++; continue }
+        if (!res.ok) throw new Error(data.error || res.statusText)
+        if (data.entry) added.push(data.entry)
+      } catch (e) {
+        failed.push({ name: r.tittel || r.key, error: e.message })
+      }
+    }
+    setProgress(p => ({ ...p, done: p.total }))
+    setBusy(false)
+    setResult({ added: added.length, skipped, failed })
+    if (added.length) onAdded(added)
+  }
+
+  if (busy) {
+    const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0
+    return (
+      <div>
+        <div style={{ fontSize: 13, color: C.text, fontWeight: 600, marginBottom: 8 }}>
+          Legger til {Math.min(progress.done + 1, progress.total)} av {progress.total}
+        </div>
+        <div style={{ height: 6, borderRadius: 99, background: C.bg, overflow: 'hidden' }}>
+          <div style={{ width: `${pct}%`, height: '100%', background: C.accent, transition: 'width .2s' }} />
+        </div>
+      </div>
+    )
+  }
+
+  if (result) {
+    return (
+      <div>
+        <div style={{ fontSize: 13, color: C.text, fontWeight: 600, marginBottom: 6 }}>Ferdig</div>
+        <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6 }}>
+          {result.added} lagt til
+          {result.skipped > 0 && ` · ${result.skipped} fantes fra før`}
+          {result.failed.length > 0 && ` · ${result.failed.length} feilet`}
+        </div>
+        {result.failed.length > 0 && (
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: C.danger, lineHeight: 1.6, maxHeight: 140, overflowY: 'auto' }}>
+            {result.failed.map((f, i) => <li key={i}>{f.name}: {f.error}</li>)}
+          </ul>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={btn.primary}>Lukk</button>
+        </div>
+      </div>
+    )
+  }
+
+  if (reports === null) {
+    return <div style={{ fontSize: 13, color: C.textMute, display: 'inline-flex', alignItems: 'center' }}>Henter rapporter<LoadingDots /></div>
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 12 }}>
+        Dokumenter som allerede finnes i andre dokumentbanker. De deler samme fil
+        på serveren, så ingenting lastes opp på nytt.
+        {available.length === 0 && ' Alle tilgjengelige rapporter ligger allerede i denne banken.'}
+      </div>
+
+      <ReportPicker
+        reports={available}
+        selected={selected}
+        search={search}
+        onSearch={setSearch}
+        onToggle={(key) => setSelected(prev => {
+          const next = new Set(prev)
+          if (next.has(key)) next.delete(key); else next.add(key)
+          return next
+        })}
+        onSelectAll={(keys) => setSelected(new Set(keys))}
+        onClear={() => setSelected(new Set())}
+      />
+
+      {urlCount > 0 && (
+        <div style={{
+          marginTop: 10, padding: '9px 12px', borderRadius: 8,
+          background: C.warnBg, border: `1px solid ${C.border}`,
+          fontSize: 12.5, color: C.textMute, lineHeight: 1.6,
+        }}>
+          {urlCount} av valget er nettsider. De legges inn som lenker og hentes på
+          nytt ved hver bygging — i motsetning til nye dokumentbanker, der slike
+          kilder lastes ned til en fil med én gang.
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+        <button onClick={add} disabled={!chosen.length}
+          style={{ ...btn.primary, ...(chosen.length ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
+          {chosen.length ? `Legg til ${chosen.length} ${chosen.length === 1 ? 'rapport' : 'rapporter'}` : 'Ingen valgt'}
+        </button>
+        <button onClick={onClose} style={btn.ghost}>Avbryt</button>
+      </div>
+    </div>
+  )
+}
+
+function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onPendingChange, onBusyChange, registerRollback }) {
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
   const [adding, setAdding] = useState(false)
@@ -2393,14 +2522,14 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const [reportSearch, setReportSearch] = useState('')
   // Which analysetyper (query types) the new index should expose. Defaults to the
   // always-available common types (no `indexes` restriction, i.e. «Fri analyse»).
-  const [selectedQTs, setSelectedQTs] = useState(() => new Set(DEFAULT_QUERY_TYPE_KEYS))
+  const [selectedQTs, setSelectedQTs] = useState(() => new Set(defaultQueryTypeKeys()))
 
   // Load the catalogue of existing reports when the create-index form opens.
   useEffect(() => {
     if (!creatingIndex) return
     let cancelled = false
     setAllReports(null); setSelectedKeys(new Set()); setReportSearch('')
-    setSelectedQTs(new Set(DEFAULT_QUERY_TYPE_KEYS))
+    setSelectedQTs(new Set(defaultQueryTypeKeys()))
     const base = server.replace(/\/$/, '')
     fetch(`${base}/admin/reports`)
       .then(r => r.ok ? r.json() : Promise.reject())
@@ -2491,8 +2620,39 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const [toPrune, setToPrune] = useState(0)
   const [listLoading, setListLoading] = useState(true)
 
+  const [seedOpen, setSeedOpen] = useState(false)
+
+  // Deleting a bank: open, the name typed to confirm, and the in-flight state.
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleteName, setDeleteName] = useState('')
+  const [deleteBusy, setDeleteBusy] = useState(false)
+  const [deleteErr, setDeleteErr]   = useState('')
+
+  const deleteBank = async () => {
+    setDeleteBusy(true); setDeleteErr('')
+    try {
+      const base = server.replace(/\/$/, '')
+      const q = encodeURIComponent(indexName)
+      // The endpoint wants the name twice — a mistargeted call fails instead of
+      // wiping the wrong bank.
+      const res = await fetch(`${base}/admin/indexes?index_name=${q}&confirm=${q}`, { method: 'DELETE' })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setDeleteOpen(false)
+      setDeleteName('')
+      // The bank is gone, so nothing about it is pending any more.
+      onPendingChange?.(false)
+      baselineRef.current = null
+      onIndexDeleted?.(indexName, data.removed)
+    } catch (e) {
+      setDeleteErr(e.message)
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   const refreshPending = useCallback(async () => {
-    if (!indexName) return
+    if (!indexName) { setUnbuiltKeys(new Set()); setToPrune(0); return }
     try {
       const base = server.replace(/\/$/, '')
       const res = await fetch(`${base}/admin/reindex/pending?index_name=${encodeURIComponent(indexName)}`)
@@ -2504,7 +2664,9 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   }, [server, indexName])
 
   const load = useCallback(async () => {
-    if (!indexName) return
+    // No bank at all — after deleting the last one. Show an empty list rather
+    // than leaving the previous bank's rows on screen.
+    if (!indexName) { setEntries([]); setListLoading(false); setErr(''); return }
     setErr('')
     setListLoading(true)
     try {
@@ -2727,8 +2889,86 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
           {listLoading ? <ListLoading compact /> : `${entries?.length ?? 0} oppføringer`}
         </span>
         <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny dokumentbank</button>
+        <button
+          onClick={() => { setDeleteOpen(true); setDeleteName(''); setDeleteErr('') }}
+          disabled={!indexName}
+          title={indexName ? `Slett «${indexName}» permanent` : 'Ingen dokumentbank valgt'}
+          style={{ ...btn.danger, ...(indexName ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
+          Slett dokumentbank
+        </button>
       </div>
       )}
+
+      <Modal
+        open={seedOpen}
+        onClose={() => setSeedOpen(false)}
+        title="Legg til eksisterende rapporter"
+        subtitle={indexName}
+        width={640}>
+        {seedOpen && (
+          <AddExistingReports
+            server={server}
+            indexName={indexName}
+            entries={entries}
+            onAdded={handleImported}
+            onClose={() => setSeedOpen(false)}
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={deleteOpen}
+        onClose={() => { if (!deleteBusy) setDeleteOpen(false) }}
+        title="Slett dokumentbank"
+        subtitle={indexName}
+        width={520}>
+        <div style={{
+          padding: '10px 12px', borderRadius: 8, marginBottom: 14,
+          background: C.dangerBg, border: `1px solid ${C.danger}`,
+          fontSize: 13, color: C.text, lineHeight: 1.6,
+        }}>
+          <strong>Dette kan ikke angres.</strong> Alt som hører til «{indexName}» slettes permanent:
+          <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+            <li>{entries == null ? 'alle' : entries.length} oppføringer i dokumentlisten</li>
+            <li>alle opplastede filer på serveren</li>
+            <li>den bygde dokumentbanken (vektorindeksen) og kopiene i skylagringen</li>
+          </ul>
+        </div>
+
+        <label htmlFor="delete-confirm" style={{ display: 'block', fontSize: 13, color: C.textMute, marginBottom: 6 }}>
+          Skriv <strong style={{ color: C.text }}>{indexName}</strong> for å bekrefte:
+        </label>
+        <input
+          id="delete-confirm"
+          autoFocus
+          value={deleteName}
+          onChange={e => setDeleteName(e.target.value)}
+          disabled={deleteBusy}
+          spellCheck={false}
+          style={{
+            width: '100%', boxSizing: 'border-box', padding: '9px 12px', borderRadius: 8,
+            border: `1.5px solid ${C.borderHi}`, background: C.surface, color: C.text,
+            fontSize: 14, fontFamily: 'monospace', outline: 'none',
+          }}
+        />
+
+        {deleteErr && <div style={{ fontSize: 12, color: C.danger, marginTop: 10 }}>{deleteErr}</div>}
+
+        <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+          <button
+            onClick={deleteBank}
+            disabled={deleteBusy || deleteName !== indexName}
+            style={{
+              ...btn.danger,
+              ...(deleteBusy || deleteName !== indexName
+                ? { opacity: 0.5, cursor: 'not-allowed' }
+                : { background: C.danger, color: '#fff', borderColor: C.danger }),
+            }}>
+            {deleteBusy ? <>Sletter<LoadingDots /></> : 'Slett permanent'}
+          </button>
+          <button onClick={() => setDeleteOpen(false)} disabled={deleteBusy} style={btn.ghost}>Avbryt</button>
+        </div>
+      </Modal>
 
       {creatingIndex && (
         <form onSubmit={submitNewIndex} style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
@@ -2826,6 +3066,13 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                     ...(!indexName ? { opacity: 0.5, cursor: 'not-allowed' } : {}),
                   }}>
                   {picking ? <>Åpner filvelger<LoadingDots /></> : '+ Legg til dokument(er)'}
+                </button>
+                <button
+                  onClick={() => setSeedOpen(true)}
+                  disabled={!indexName}
+                  title="Hent inn dokumenter som allerede finnes i andre dokumentbanker"
+                  style={{ ...btn.ghost, ...(indexName ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
+                  + Fra andre dokumentbanker
                 </button>
               </div>
             }>
@@ -3023,7 +3270,472 @@ const SIDEBAR_TOP = 61  // height of the sticky top bar
 // expands into a working panel, so document admin opens alongside the analysis
 // view instead of replacing it. Wider than the log — the document table needs
 // the room.
-function AdminDrawer({ open, onOpen, onClose, children }) {
+// Create and edit analysetyper. Built-in types can have their instructions
+// changed and reset; types made here can also be renamed and deleted.
+//
+// A new type runs on the free-analysis machinery and produces the generic
+// {label, description, sources} finding shape — the structured chain that
+// Strategisk risiko emits is drawn by dedicated components, so a new type
+// cannot invent an output nothing knows how to render.
+function AnalysisAdmin({ server, indexes, onBackToSearch, onChanged }) {
+  const [types, setTypes]   = useState(null)
+  const [err, setErr]       = useState('')
+  const [busy, setBusy]     = useState(false)
+  const [editing, setEditing] = useState(null)   // key being edited
+  const [draft, setDraft]   = useState({})
+  const [creating, setCreating] = useState(false)
+  const [form, setForm]     = useState({
+    key: '', label: '', description: '', copy_from: '',
+    extract_system: '', aggregate_system: '', default_question: '',
+  })
+  const [suggesting, setSuggesting] = useState(false)
+
+  // Copying supplies the instructions; starting blank means writing them, and
+  // the description is the one thing the author has already put into words.
+  const suggest = async () => {
+    setSuggesting(true); setErr('')
+    try {
+      const res = await fetch(`${base}/admin/query-types/suggest`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: form.label, description: form.description }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setForm(f => ({
+        ...f,
+        extract_system: data.extract_system || f.extract_system,
+        aggregate_system: data.aggregate_system || f.aggregate_system,
+        default_question: data.default_question || f.default_question,
+      }))
+    } catch (e) { setErr(e.message) } finally { setSuggesting(false) }
+  }
+
+  // Which templates each bank offers. An absent entry means the bank follows
+  // each template's own default rule rather than an explicit list.
+  const [bankMap, setBankMap] = useState(null)
+  const [bank, setBank]       = useState('')
+  const [bankPick, setBankPick] = useState(null)   // null until a bank is chosen
+  const [bankMsg, setBankMsg] = useState('')
+
+  const base = server.replace(/\/$/, '')
+
+  const load = useCallback(async () => {
+    setErr('')
+    try {
+      const res = await fetch(`${base}/admin/query-types`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setTypes(data.query_types || [])
+    } catch (e) { setErr(e.message); setTypes([]) }
+  }, [base])
+
+  useEffect(() => { load() }, [load])
+
+  const loadBankMap = useCallback(async () => {
+    try {
+      const res = await fetch(`${base}/admin/index-query-types`)
+      setBankMap(res.ok ? (await res.json()) : {})
+    } catch { setBankMap({}) }
+  }, [base])
+
+  useEffect(() => { loadBankMap() }, [loadBankMap])
+
+  // Picking a bank seeds the checkboxes from what it offers today — either its
+  // pinned list, or what the defaults would give it.
+  const selectBank = (name) => {
+    setBank(name)
+    setBankMsg('')
+    if (!name) { setBankPick(null); return }
+    const pinned = bankMap?.[name]
+    if (Array.isArray(pinned)) {
+      setBankPick(new Set(pinned))
+    } else {
+      setBankPick(new Set(queryTypesForIndex(name, bankMap).map(qt => qt.key)))
+    }
+  }
+
+  const saveBank = async () => {
+    setBusy(true); setErr(''); setBankMsg('')
+    try {
+      const res = await fetch(`${base}/admin/index-query-types/${encodeURIComponent(bank)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query_types: [...(bankPick || [])] }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setBankMsg(data.using_defaults
+        ? 'Lagret. Banken bruker nå standardreglene for hver mal.'
+        : `Lagret. Banken tilbyr ${data.query_types.length} ${data.query_types.length === 1 ? 'mal' : 'maler'}.`)
+      await loadBankMap()
+      await onChanged?.()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  const after = async () => { await load(); await loadBankMap(); await onChanged?.() }
+
+  const create = async () => {
+    setBusy(true); setErr('')
+    try {
+      const res = await fetch(`${base}/admin/query-types`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setCreating(false)
+      setForm({
+        key: '', label: '', description: '', copy_from: '',
+        extract_system: '', aggregate_system: '', default_question: '',
+      })
+      await after()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  const save = async () => {
+    setBusy(true); setErr('')
+    try {
+      const res = await fetch(`${base}/admin/query-types/${editing}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(draft),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setEditing(null)
+      await after()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  const remove = async (row) => {
+    const what = row.custom
+      ? `Slette analysemalen «${row.label || row.key}»?\n\nDette kan ikke angres.`
+      : `Tilbakestille «${row.label || row.key}» til standardinstruksjonene?`
+    if (!window.confirm(what)) return
+    setBusy(true); setErr('')
+    try {
+      const res = await fetch(`${base}/admin/query-types/${row.key}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      await after()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  const startEdit = (row) => {
+    setEditing(row.key)
+    setDraft({
+      label: row.label, description: row.description,
+      default_question: row.default_question,
+      extract_system: row.extract_system, aggregate_system: row.aggregate_system,
+    })
+  }
+
+  const field = (k) => draft[k] ?? ''
+  const setField = (k, v) => setDraft(d => ({ ...d, [k]: v }))
+  const editRow = types?.find(r => r.key === editing)
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
+        <div style={{ fontSize: 20, fontWeight: 600, color: C.text }}>Administrer analysemaler</div>
+        <button onClick={onBackToSearch} title="Skjul panel" style={{
+          border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+          borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1, flexShrink: 0,
+        }}>«</button>
+      </div>
+
+      <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 16, maxWidth: 620 }}>
+        Analysemalene bestemmer hva en aggregert analyse ser etter. Innebygde maler
+        kan få nye instruksjoner og tilbakestilles; egne maler kan i tillegg
+        omdøpes og slettes.
+      </div>
+
+      {!creating && (
+        <button onClick={() => { setCreating(true); setErr('') }} style={{ ...btn.primary, marginBottom: 16 }}>
+          + Ny analysemal
+        </button>
+      )}
+
+      {creating && (
+        <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>Ny analysemal</div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px', marginBottom: 12 }}>
+            <div>
+              <div style={{ ...metaLabel, marginBottom: 4 }}>Navn</div>
+              <input value={form.label} onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+                placeholder="f.eks. Tiltak og anbefalinger" style={inp.text} />
+            </div>
+            <div>
+              <div style={{ ...metaLabel, marginBottom: 4 }}>Nøkkel</div>
+              <input value={form.key} onChange={e => setForm(f => ({ ...f, key: e.target.value }))}
+                placeholder="tiltak" spellCheck={false}
+                style={{ ...inp.text, fontFamily: 'monospace' }} />
+              <div style={{ fontSize: 11, color: C.textFaint, marginTop: 3 }}>
+                Små bokstaver, tall og understrek. Kan ikke endres senere.
+              </div>
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ ...metaLabel, marginBottom: 4 }}>Beskrivelse</div>
+              <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Vises under navnet når analysetypen velges" style={inp.text} />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+              <div style={{ ...metaLabel, marginBottom: 4 }}>Bygg på en eksisterende mal</div>
+              <select value={form.copy_from} onChange={e => setForm(f => ({ ...f, copy_from: e.target.value }))}
+                style={{ ...inp.text, cursor: 'pointer' }}>
+                <option value="">Start tom</option>
+                {(types || []).map(r => (
+                  <option key={r.key} value={r.key}>{r.label || r.key}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: C.textFaint, marginTop: 3 }}>
+                Kopierer instruksjonene fra malen du velger, så du kan justere dem
+                i stedet for å skrive dem fra bunnen.
+              </div>
+            </div>
+          </div>
+
+          {!form.copy_from && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+                <button
+                  onClick={suggest}
+                  disabled={suggesting || !form.description.trim()}
+                  title={form.description.trim()
+                    ? 'La AI skrive et utkast ut fra beskrivelsen'
+                    : 'Skriv en beskrivelse først — den er grunnlaget for forslaget'}
+                  style={{ ...btn.ghost, ...(suggesting || !form.description.trim() ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+                  {suggesting ? <>Foreslår<LoadingDots /></> : '✨ Foreslå instruksjoner'}
+                </button>
+                <span style={{ fontSize: 11.5, color: C.textFaint }}>
+                  Utkast basert på beskrivelsen. Les gjennom og juster før du oppretter.
+                </span>
+              </div>
+
+              <div style={{ ...metaLabel, marginBottom: 3 }}>Instruksjon per dokument</div>
+              <AutoTextarea value={form.extract_system}
+                onChange={e => setForm(f => ({ ...f, extract_system: e.target.value }))}
+                spellCheck={false} style={{
+                  width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+                  minHeight: 70, padding: '8px 12px', borderRadius: 8, fontSize: 12,
+                  background: C.surface, color: C.text, border: `1px solid ${C.border}`,
+                  fontFamily: 'monospace', lineHeight: 1.5, outline: 'none', marginBottom: 10,
+                }} />
+
+              <div style={{ ...metaLabel, marginBottom: 3 }}>Instruksjon for oppsummeringen</div>
+              <AutoTextarea value={form.aggregate_system}
+                onChange={e => setForm(f => ({ ...f, aggregate_system: e.target.value }))}
+                spellCheck={false} style={{
+                  width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+                  minHeight: 70, padding: '8px 12px', borderRadius: 8, fontSize: 12,
+                  background: C.surface, color: C.text, border: `1px solid ${C.border}`,
+                  fontFamily: 'monospace', lineHeight: 1.5, outline: 'none',
+                }} />
+              <div style={{ fontSize: 11, color: C.textFaint, marginTop: 4, lineHeight: 1.6 }}>
+                Må be om JSON på formen {'{{"items": [{{"label": …, "description": …, "sources": […]}}]}}'} —
+                med doble klammer, siden teksten kjøres gjennom en mal før den sendes til modellen.
+              </div>
+            </div>
+          )}
+
+          {err && <div style={{ fontSize: 12, color: C.danger, marginBottom: 10 }}>{err}</div>}
+
+          <div style={{ display: 'flex', gap: 8 }}>
+            {(() => {
+              // Either copy the instructions from somewhere, or supply them.
+              const ready = form.key.trim() && form.label.trim() &&
+                (form.copy_from || (form.extract_system.trim() && form.aggregate_system.trim()))
+              return (
+                <button onClick={create} disabled={busy || !ready}
+                  title={ready ? undefined : 'Fyll inn navn, nøkkel og enten en mal å bygge på eller begge instruksjonene'}
+                  style={{ ...btn.primary, ...(busy || !ready ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+                  {busy ? 'Oppretter…' : 'Opprett'}
+                </button>
+              )
+            })()}
+            <button onClick={() => { setCreating(false); setErr('') }} disabled={busy} style={btn.ghost}>Avbryt</button>
+          </div>
+        </div>
+      )}
+
+      {(indexes || []).length > 0 && (
+        <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 4 }}>
+            Hvilke maler en dokumentbank tilbyr
+          </div>
+          <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 12 }}>
+            Velg en dokumentbank og kryss av malene den skal tilby i analysevisningen.
+            Fjerner du alle kryssene, faller banken tilbake på standardregelen for hver mal.
+          </div>
+
+          <select
+            value={bank}
+            onChange={e => selectBank(e.target.value)}
+            style={{
+              padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
+              border: `1px solid ${C.border}`, borderRadius: 8,
+              background: C.surface, color: C.text, cursor: 'pointer', maxWidth: 340,
+            }}>
+            <option value="">Velg dokumentbank…</option>
+            {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+
+          {bank && bankPick && (
+            <>
+              <div style={{ fontSize: 11, color: C.textFaint, margin: '10px 0 6px' }}>
+                {Array.isArray(bankMap?.[bank])
+                  ? 'Banken har en egen liste i dag.'
+                  : 'Banken følger standardreglene i dag — lagrer du her, får den sin egen liste.'}
+              </div>
+              <div style={{
+                border: `1px solid ${C.border}`, borderRadius: 8, background: C.bg,
+                maxHeight: 260, overflowY: 'auto', marginBottom: 10,
+              }}>
+                {(types || []).map(r => (
+                  <label key={r.key} style={{
+                    display: 'flex', alignItems: 'flex-start', gap: 8, padding: '7px 10px',
+                    fontSize: 13, color: C.text, cursor: 'pointer',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={bankPick.has(r.key)}
+                      onChange={() => setBankPick(prev => {
+                        const next = new Set(prev)
+                        if (next.has(r.key)) next.delete(r.key); else next.add(r.key)
+                        return next
+                      })}
+                      style={{ marginTop: 3 }}
+                    />
+                    <span style={{ minWidth: 0 }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {r.label || r.key}
+                        {r.custom && <Tag tone="success">EGEN</Tag>}
+                      </span>
+                      {r.description && (
+                        <span style={{ display: 'block', fontSize: 11.5, color: C.textMute, lineHeight: 1.5 }}>
+                          {r.description}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <button onClick={saveBank} disabled={busy} style={btn.primary}>
+                  {busy ? 'Lagrer…' : 'Lagre for denne banken'}
+                </button>
+                <button onClick={() => selectBank(bank)} disabled={busy} style={btn.ghost}>Forkast endringer</button>
+                {bankMsg && <span style={{ fontSize: 12, color: C.success }}>{bankMsg}</span>}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {err && !creating && <div style={{ fontSize: 12, color: C.danger, marginBottom: 10 }}>{err}</div>}
+
+      {types === null ? (
+        <div style={{ fontSize: 13, color: C.textMute, display: 'inline-flex', alignItems: 'center' }}>
+          Henter analysemaler<LoadingDots />
+        </div>
+      ) : (
+        <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+          {types.map((row, i) => (
+            <div key={row.key} style={{
+              padding: '12px 14px',
+              borderTop: i === 0 ? 'none' : `1px solid ${C.border}`,
+              display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap',
+            }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{row.label || row.key}</span>
+                  <Tag tone={row.custom ? 'success' : 'neutral'}>{row.custom ? 'EGEN' : 'INNEBYGD'}</Tag>
+                  <span style={{ fontSize: 11, color: C.textFaint, fontFamily: 'monospace' }}>{row.key}</span>
+                </div>
+                {row.description && (
+                  <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.5 }}>{row.description}</div>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button onClick={() => startEdit(row)} disabled={busy} style={btn.ghost}>Rediger</button>
+                <button onClick={() => remove(row)} disabled={busy} style={btn.danger}>
+                  {row.custom ? 'Slett' : 'Tilbakestill'}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Modal
+        open={!!editing}
+        onClose={() => { if (!busy) setEditing(null) }}
+        title={editRow?.custom ? 'Rediger analysemal' : 'Rediger instruksjoner'}
+        subtitle={editRow?.label || editing}
+        width={720}>
+        {editRow && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            {editRow.custom && (
+              <>
+                <div>
+                  <div style={{ ...metaLabel, marginBottom: 4 }}>Navn</div>
+                  <input value={field('label')} onChange={e => setField('label', e.target.value)} style={inp.text} />
+                </div>
+                <div>
+                  <div style={{ ...metaLabel, marginBottom: 4 }}>Beskrivelse</div>
+                  <input value={field('description')} onChange={e => setField('description', e.target.value)} style={inp.text} />
+                </div>
+                <div>
+                  <div style={{ ...metaLabel, marginBottom: 4 }}>Standardspørsmål</div>
+                  <input value={field('default_question')} onChange={e => setField('default_question', e.target.value)} style={inp.text} />
+                  <div style={{ fontSize: 11, color: C.textFaint, marginTop: 3 }}>
+                    Brukes når analysen kjøres uten at du skriver inn et spørsmål.
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div>
+              <div style={{ ...metaLabel, marginBottom: 3 }}>Instruksjon per dokument</div>
+              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>
+                Styrer hva som hentes ut av hvert enkelt dokument.
+              </div>
+              <AutoTextarea value={field('extract_system')} onChange={e => setField('extract_system', e.target.value)}
+                spellCheck={false} style={{
+                  width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+                  padding: '8px 12px', borderRadius: 8, fontSize: 12, background: C.surface, color: C.text,
+                  border: `1px solid ${C.border}`, fontFamily: 'monospace', lineHeight: 1.5, outline: 'none',
+                }} />
+            </div>
+
+            <div>
+              <div style={{ ...metaLabel, marginBottom: 3 }}>Instruksjon for oppsummeringen</div>
+              <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 5 }}>
+                Styrer hvordan funnene fra alle dokumentene settes sammen. Må be om
+                JSON på formen {'{"items": [{"label": …, "description": …, "sources": […]}]}'} —
+                det er den formen visningen tegner.
+              </div>
+              <AutoTextarea value={field('aggregate_system')} onChange={e => setField('aggregate_system', e.target.value)}
+                spellCheck={false} style={{
+                  width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+                  padding: '8px 12px', borderRadius: 8, fontSize: 12, background: C.surface, color: C.text,
+                  border: `1px solid ${C.border}`, fontFamily: 'monospace', lineHeight: 1.5, outline: 'none',
+                }} />
+            </div>
+
+            {err && <div style={{ fontSize: 12, color: C.danger }}>{err}</div>}
+
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              <button onClick={save} disabled={busy} style={btn.primary}>{busy ? 'Lagrer…' : 'Lagre'}</button>
+              <button onClick={() => setEditing(null)} disabled={busy} style={btn.ghost}>Avbryt</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+    </div>
+  )
+}
+
+function AdminDrawer({ open, onOpen, onClose, label, children }) {
   const railRef = useRef(null)
   // The overlay starts where the rails end, so the conversation log stays
   // visible (and usable) next to the expanded panel. Measured rather than
@@ -3061,14 +3773,14 @@ function AdminDrawer({ open, onOpen, onClose, children }) {
       <div ref={railRef} style={rail}>
         {!open && (
           <>
-            <button onClick={onOpen} title="Administrer dokumenter" style={{
+            <button onClick={onOpen} title={label} style={{
               border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
               borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1,
             }}>»</button>
             <div style={{
               writingMode: 'vertical-rl', marginTop: 12, fontSize: 11, letterSpacing: '.08em',
               textTransform: 'uppercase', color: C.textFaint, userSelect: 'none',
-            }}>Administrer dokumenter</div>
+            }}>{label}</div>
           </>
         )}
       </div>
@@ -3207,6 +3919,10 @@ export default function App() {
   // A build or import is running in the panel. Leaving would discard the list
   // changes the job is in the middle of committing.
   const [adminBusy, setAdminBusy] = useState(false)
+  // The analyses panel. Kept separate from `view` so the documents panel's own
+  // guards and rollback stay untouched; they overlay the same area, so opening
+  // one closes the other.
+  const [analysesOpen, setAnalysesOpen] = useState(false)
   // AdminView hands us its undo function so the confirm below can discard the
   // session's changes before the panel goes away.
   const adminRollbackRef = useRef(null)
@@ -3421,7 +4137,7 @@ export default function App() {
     const base = server.replace(/\/$/, '')
     return fetch(`${base}/query-types`)
       .then(r => r.ok ? r.json() : Promise.reject())
-      .then(setQueryTypeDefs)
+      .then(defs => { registerQueryTypes(defs); setQueryTypeDefs(defs) })
       .catch(() => {})
   }, [server])
 
@@ -3642,7 +4358,7 @@ export default function App() {
           } else if (evt.event === 'doc_done') {
             patch({ documents_visited: evt.index + 1 })
           } else if (evt.event === 'result') {
-            const items = evt[STRUCTURED_OUTPUT_KEYS[queryType]] || []
+            const items = evt[outputKeyFor(queryType)] || []
             // With the synthesis skipped the item list is empty by design, and
             // reporting "0 resultater" made a successful run look like a failure.
             setStatus(evt.aggregated === false
@@ -3743,23 +4459,6 @@ export default function App() {
               </div>
             )}
             <button
-              disabled={loading || adminBusy}
-              title={loading ? 'Vent til analysen er ferdig'
-                : adminBusy ? 'Vent til jobben i panelet er ferdig' : undefined}
-              onClick={() => {
-                if (view === 'admin') { leaveAdmin(); return }
-                setSidebarOpen(false)
-                setView('admin')
-              }}
-              style={{
-                padding: '6px 12px', borderRadius: 8, border: `1px solid ${C.border}`,
-                background: view === 'admin' ? C.accentBg : C.surface, fontSize: 13,
-                cursor: (loading || adminBusy) ? 'not-allowed' : 'pointer',
-                opacity: (loading || adminBusy) ? 0.5 : 1,
-                color: view === 'admin' ? C.accent : C.textMute, fontFamily: 'inherit', fontWeight: 500,
-              }}
-            >Administrer dokumenter</button>
-            <button
               onClick={() => setSettingsOpen(true)}
               title="Innstillinger"
               aria-haspopup="dialog"
@@ -3786,7 +4485,8 @@ export default function App() {
         />
         <AdminDrawer
           open={view === 'admin'}
-          onOpen={() => { setSidebarOpen(false); setView('admin') }}
+          label="Administrer dokumenter"
+          onOpen={() => { setSidebarOpen(false); setAnalysesOpen(false); setView('admin') }}
           onClose={leaveAdmin}>
           <AdminView
             server={server}
@@ -3811,6 +4511,30 @@ export default function App() {
               // Pick up the analysetyper just pinned to the new index.
               refreshIndexQueryTypes()
             }}
+            onIndexDeleted={(name) => {
+              const next = indexes.filter(n => n !== name)
+              setIndexes(next)
+              // Fall back to whatever bank is left, or none at all.
+              const fallback = next[0] || ''
+              selectedIndexRef.current = fallback
+              setSelectedIndex(fallback)
+              setQueryType('free')
+              setResults([])
+              refreshIndexQueryTypes()
+            }}
+          />
+        </AdminDrawer>
+
+        <AdminDrawer
+          open={analysesOpen}
+          label="Administrer analysemaler"
+          onOpen={() => { setSidebarOpen(false); leaveAdmin(); setAnalysesOpen(true) }}
+          onClose={() => setAnalysesOpen(false)}>
+          <AnalysisAdmin
+            server={server}
+            indexes={indexes}
+            onBackToSearch={() => setAnalysesOpen(false)}
+            onChanged={async () => { await refreshQueryTypes(); await refreshIndexQueryTypes() }}
           />
         </AdminDrawer>
         <div style={{ flex: 1, minWidth: 0 }}>
@@ -3857,7 +4581,7 @@ export default function App() {
                   <div style={{
                     position: 'absolute', top: 12, right: 12,
                     width: 8, height: 8, borderRadius: 99,
-                    background: QUERY_TYPE_TINT[qt.key],
+                    background: QUERY_TYPE_TINT[qt.key] || C.accentBg,
                     border: `1px solid ${C.border}`,
                   }} />
                   <div style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text, marginBottom: 3 }}>{qt.label}</div>
@@ -3937,7 +4661,7 @@ export default function App() {
           <div style={{ display: 'flex', gap: 18, marginTop: 14, flexWrap: 'wrap', ...lockedWhile(loading) }}>
             <SectionToggle open={filtersOpen} onToggle={() => setFiltersOpen(p => !p)} label="Filtre" badge={activeCount} />
             <SectionToggle open={advancedOpen} onToggle={() => setAdvancedOpen(p => !p)} label="Analysedybde" />
-            <SectionToggle open={promptsOpen} onToggle={() => setPromptsOpen(p => !p)} label="Rediger instruksjoner" />
+            <SectionToggle open={promptsOpen} onToggle={() => setPromptsOpen(p => !p)} label="Se instruksjonene" />
             {status && (
               <div style={{
                 marginLeft: 'auto',
@@ -3982,12 +4706,7 @@ export default function App() {
           {/* Instructions drawer — sits below, as its own thing */}
           {promptsOpen && (
             <div style={{ marginTop: 14, padding: '14px 16px', background: C.bg, border: `1px solid ${C.border}`, borderRadius: 10 }}>
-              <PromptsEditor
-                queryType={queryType}
-                defs={queryTypeDefs}
-                server={server}
-                onSaved={refreshQueryTypes}
-              />
+              <PromptsViewer queryType={queryType} defs={queryTypeDefs} />
             </div>
           )}
         </div>
