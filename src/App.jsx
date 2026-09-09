@@ -859,6 +859,7 @@ function FindingSource({ source, entry }) {
 // contributed differs, and FindingSource absorbs that.
 function FindingsBreakdown({ items, perDoc }) {
   const [open, setOpen] = useState(false)
+  const [leftoversOpen, setLeftoversOpen] = useState(false)
   const byTitle = new Map()
   for (const e of perDoc) {
     const k = normTitle(e.tittel || e.filename)
@@ -894,12 +895,37 @@ function FindingsBreakdown({ items, perDoc }) {
       </div>
       {leftovers.length > 0 && (
         <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.border}` }}>
-          <div style={heading}>Dokumenter uten sitater i funnene over</div>
-          {leftovers.map((entry, i) => (
-            entry.structured
-              ? <RiskDocAnalysis key={i} entry={entry} />
-              : <FindingSource key={i} source={{ tittel: entry.tittel || entry.filename }} entry={entry} />
-          ))}
+          <div
+            onClick={() => setLeftoversOpen(o => !o)}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none', width: 'fit-content' }}
+          >
+            <Chevron open={leftoversOpen} />
+            <div style={heading}>Dokumenter uten sitater i funnene over ({leftovers.length})</div>
+          </div>
+          <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 2, marginBottom: 2, paddingLeft: 19 }}>
+            Lest og analysert, men ingen av funnene over viser til dem som kilde.
+          </div>
+          {leftoversOpen && (
+            <div style={{ marginTop: 8 }}>
+              {leftovers.map((entry, i) => {
+                const parts = [entry.tittel || entry.filename]
+                if (entry.publisert_av) parts.push(entry.publisert_av)
+                if (entry.publisert_arstall) parts.push(String(entry.publisert_arstall))
+                const label = parts.filter(Boolean).join(' · ')
+                const url = (entry.kilde_url || '').trim()
+                return (
+                  <div key={i} style={{
+                    fontSize: 13, color: C.textMute, lineHeight: 1.6,
+                    paddingLeft: 12, borderLeft: `2px solid ${C.border}`, marginBottom: 4,
+                  }}>
+                    {url
+                      ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, textDecoration: 'none' }}>{label} ↗</a>
+                      : label}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
     </>
@@ -4498,9 +4524,14 @@ export default function App() {
             setStatus(evt.message)
           } else if (evt.event === 'doc_start') {
             patch({ _docIndex: evt.index, _docTotal: evt.total, _docTittel: evt.tittel })
-            setStatus(`[${evt.index + 1}/${evt.total}] ${evt.tittel}`)
+            setStatus(`Behandler «${evt.tittel}»…`)
           } else if (evt.event === 'doc_done') {
-            patch({ documents_visited: evt.index + 1 })
+            // Extraction runs in parallel, so completions arrive out of order —
+            // use the server's monotonic `completed` count for a stable progress
+            // number (falling back to index+1 for older servers).
+            const visited = evt.completed ?? (evt.index + 1)
+            patch({ documents_visited: visited })
+            setStatus(`${visited}/${evt.total} dokumenter ferdig`)
           } else if (evt.event === 'result') {
             const items = evt[outputKeyFor(queryType)] || []
             // With the synthesis skipped the item list is empty by design, and
@@ -4567,12 +4598,20 @@ export default function App() {
       }}>
         <div style={{ maxWidth: 1080, margin: '0 auto', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {/* A page with a folded corner, checked: documents, and the
+                analysis run across them. Two strokes, so it stays legible at 32px. */}
             <div style={{
-              width: 32, height: 32, borderRadius: 8,
+              width: 32, height: 32, borderRadius: 8, flexShrink: 0,
               background: `linear-gradient(135deg, ${C.accent}, #60A5FA)`,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#fff', fontWeight: 700, fontSize: 14,
-            }}>L</div>
+            }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff"
+                strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M13.5 3.5H8A2 2 0 0 0 6 5.5v13a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V8z" />
+                <path d="M13.5 3.5V8H18" />
+                <path d="M9.5 13.8l1.9 1.9L15 12" />
+              </svg>
+            </div>
             <div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <div style={{ fontSize: 16, fontWeight: 600, color: C.text, lineHeight: 1.2 }}>DokumentLab</div>
