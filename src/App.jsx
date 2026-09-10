@@ -182,7 +182,18 @@ const EXAMPLE_QUESTIONS = {
   ],
 }
 
+// Questions stored on the server, keyed by bank. Mutated like the theme object
+// C, so the many read sites pick up the loaded set without threading a prop.
+const STORED_EXAMPLES = {}
+
+function registerExampleQuestions(map) {
+  for (const k of Object.keys(STORED_EXAMPLES)) delete STORED_EXAMPLES[k]
+  Object.assign(STORED_EXAMPLES, map || {})
+}
+
 function examplesFor(indexName) {
+  const stored = STORED_EXAMPLES[indexName]
+  if (Array.isArray(stored) && stored.length) return stored
   return EXAMPLE_QUESTIONS[indexName] || EXAMPLE_QUESTIONS._default
 }
 
@@ -3445,7 +3456,7 @@ const SIDEBAR_TOP = 61  // height of the sticky top bar
 // {label, description, sources} finding shape — the structured chain that
 // Strategisk risiko emits is drawn by dedicated components, so a new type
 // cannot invent an output nothing knows how to render.
-function AnalysisAdmin({ server, indexes, onBackToSearch, onChanged }) {
+function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, onExamplesChanged }) {
   const [types, setTypes]   = useState(null)
   const [err, setErr]       = useState('')
   const [busy, setBusy]     = useState(false)
@@ -3485,6 +3496,11 @@ function AnalysisAdmin({ server, indexes, onBackToSearch, onChanged }) {
   const [bankPick, setBankPick] = useState(null)   // null until a bank is chosen
   const [bankMsg, setBankMsg] = useState('')
 
+  // The suggestions offered on an empty analysis screen, per bank.
+  const [exMap, setExMap] = useState(null)
+  const [exDraft, setExDraft] = useState([])
+  const [exMsg, setExMsg] = useState('')
+
   const base = server.replace(/\/$/, '')
 
   const load = useCallback(async () => {
@@ -3499,27 +3515,66 @@ function AnalysisAdmin({ server, indexes, onBackToSearch, onChanged }) {
 
   useEffect(() => { load() }, [load])
 
+  // What a bank offers today — either its pinned list, or what the defaults
+  // would give it.
+  const pickFor = (name, map) => {
+    const pinned = map?.[name]
+    return Array.isArray(pinned)
+      ? new Set(pinned)
+      : new Set(queryTypesForIndex(name, map).map(qt => qt.key))
+  }
+
+  // Only on the first load: later loads must not yank the selection back to the
+  // app's bank while the user is looking at another one.
+  const seededRef = useRef(false)
+
   const loadBankMap = useCallback(async () => {
     try {
       const res = await fetch(`${base}/admin/index-query-types`)
-      setBankMap(res.ok ? (await res.json()) : {})
+      const map = res.ok ? (await res.json()) : {}
+      setBankMap(map)
+
+      let exs = {}
+      try {
+        const r2 = await fetch(`${base}/admin/example-questions`)
+        if (r2.ok) exs = await r2.json()
+      } catch { /* the panel still works without them */ }
+      setExMap(exs)
+      if (!seededRef.current && currentIndex) {
+        seededRef.current = true
+        setBank(currentIndex)
+        setBankPick(pickFor(currentIndex, map))
+        setExDraft(exs[currentIndex] || [])
+      }
     } catch { setBankMap({}) }
-  }, [base])
+  }, [base, currentIndex])
 
   useEffect(() => { loadBankMap() }, [loadBankMap])
 
-  // Picking a bank seeds the checkboxes from what it offers today — either its
-  // pinned list, or what the defaults would give it.
   const selectBank = (name) => {
     setBank(name)
     setBankMsg('')
-    if (!name) { setBankPick(null); return }
-    const pinned = bankMap?.[name]
-    if (Array.isArray(pinned)) {
-      setBankPick(new Set(pinned))
-    } else {
-      setBankPick(new Set(queryTypesForIndex(name, bankMap).map(qt => qt.key)))
-    }
+    setExMsg('')
+    setBankPick(name ? pickFor(name, bankMap) : null)
+    setExDraft(name ? (exMap?.[name] || []) : [])
+  }
+
+  const saveExamples = async () => {
+    setBusy(true); setErr(''); setExMsg('')
+    try {
+      const res = await fetch(`${base}/admin/example-questions/${encodeURIComponent(bank)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questions: exDraft.map(q => q.trim()).filter(Boolean) }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setExDraft(data.questions)
+      setExMap(m => ({ ...(m || {}), [bank]: data.questions }))
+      setExMsg(data.using_defaults
+        ? 'Lagret. Banken bruker nå standardspørsmålene.'
+        : `Lagret. ${data.questions.length} ${data.questions.length === 1 ? 'spørsmål' : 'spørsmål'}.`)
+      await onExamplesChanged?.()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
   const saveBank = async () => {
@@ -3793,6 +3848,55 @@ function AnalysisAdmin({ server, indexes, onBackToSearch, onChanged }) {
                 </button>
                 <button onClick={() => selectBank(bank)} disabled={busy} style={btn.ghost}>Forkast endringer</button>
                 {bankMsg && <span style={{ fontSize: 12, color: C.success }}>{bankMsg}</span>}
+              </div>
+
+              <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${C.border}` }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 }}>
+                  Eksempelspørsmål
+                </div>
+                <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 10 }}>
+                  Forslagene som tilbys på en tom analyseskjerm for denne banken.
+                  Lar du listen stå tom, brukes de generelle standardspørsmålene.
+                </div>
+
+                {exDraft.length === 0 && (
+                  <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: 'italic', marginBottom: 10 }}>
+                    Ingen egne spørsmål — banken viser standardspørsmålene.
+                  </div>
+                )}
+
+                {exDraft.map((q, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+                    <input
+                      value={q}
+                      onChange={e => setExDraft(d => d.map((v, j) => (j === i ? e.target.value : v)))}
+                      placeholder="Skriv et spørsmål…"
+                      style={{ ...inp.text, flex: 1 }}
+                    />
+                    <button
+                      onClick={() => setExDraft(d => d.filter((_, j) => j !== i))}
+                      disabled={busy}
+                      title="Fjern spørsmålet"
+                      style={btn.danger}>🗑</button>
+                  </div>
+                ))}
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => setExDraft(d => [...d, ''])}
+                    disabled={busy || exDraft.length >= 8}
+                    title={exDraft.length >= 8 ? 'Maks 8 spørsmål' : 'Legg til et spørsmål'}
+                    style={{ ...btn.ghost, ...(busy || exDraft.length >= 8 ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+                    + Legg til spørsmål
+                  </button>
+                  <button onClick={saveExamples} disabled={busy} style={btn.primary}>
+                    {busy ? 'Lagrer…' : 'Lagre spørsmålene'}
+                  </button>
+                  <button onClick={() => { setExDraft(exMap?.[bank] || []); setExMsg('') }} disabled={busy} style={btn.ghost}>
+                    Forkast endringer
+                  </button>
+                  {exMsg && <span style={{ fontSize: 12, color: C.success }}>{exMsg}</span>}
+                </div>
               </div>
             </>
           )}
@@ -4242,6 +4346,8 @@ export default function App() {
   const [entries, setEntries]           = useState([])
   const [optionsErr, setOptionsErr]     = useState('')
   const [queryTypeDefs, setQueryTypeDefs] = useState({})
+  // Bumped when the stored questions change, so the empty state re-renders.
+  const [, setExamplesVersion] = useState(0)
   const [filtersOpen, setFiltersOpen]   = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [promptsOpen, setPromptsOpen]   = useState(false)
@@ -4302,6 +4408,14 @@ export default function App() {
     return () => controller.abort()
   }, [server, selectedIndex])
 
+  const refreshExamples = useCallback(() => {
+    const base = server.replace(/\/$/, '')
+    return fetch(`${base}/admin/example-questions`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(map => { registerExampleQuestions(map); setExamplesVersion(v => v + 1) })
+      .catch(() => {})
+  }, [server])
+
   const refreshQueryTypes = useCallback(() => {
     const base = server.replace(/\/$/, '')
     return fetch(`${base}/query-types`)
@@ -4343,7 +4457,8 @@ export default function App() {
       })
       .catch(() => {})
     refreshQueryTypes()
-  }, [server, refreshQueryTypes, refreshIndexQueryTypes])
+    refreshExamples()
+  }, [server, refreshQueryTypes, refreshIndexQueryTypes, refreshExamples])
 
   // Remember the selected index across sessions (mirrors theme persistence).
   useEffect(() => {
@@ -4374,7 +4489,15 @@ export default function App() {
         if (!ready) timer = setTimeout(poll, 2500)
       } catch {
         if (cancelled) return
-        setHealth({ state: 'error', message: 'Får ikke kontakt med serveren.', loaded: [], expected: [], failed: {} })
+        // Unreachable almost always means the server is still cold-starting and
+        // loading its document banks — an Azure App Service instance spun up after
+        // idle can take a couple of minutes. Treat it as "starting up" (not a hard
+        // error) and keep polling; it recovers on its own.
+        setHealth({
+          state: 'connecting',
+          message: 'Serveren starter opp og laster dokumentbankene. Etter en periode uten bruk kan oppstart ta opptil et par minutter. Prøver automatisk igjen…',
+          loaded: [], expected: [], failed: {},
+        })
         timer = setTimeout(poll, 4000)
       }
     }
@@ -4721,6 +4844,8 @@ export default function App() {
           <AnalysisAdmin
             server={server}
             indexes={indexes}
+            currentIndex={selectedIndex}
+            onExamplesChanged={refreshExamples}
             onBackToSearch={() => setAnalysesOpen(false)}
             onChanged={async () => { await refreshQueryTypes(); await refreshIndexQueryTypes() }}
           />
@@ -4737,7 +4862,9 @@ export default function App() {
           }}>
             <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4,
               color: health.state === 'error' ? C.danger : C.text }}>
-              {health.state === 'error' ? 'Serveren er ikke klar' : 'Laster inn dokumentbanker…'}
+              {health.state === 'error' ? 'Serveren er ikke klar'
+                : health.state === 'connecting' ? 'Serveren starter opp…'
+                : 'Laster inn dokumentbanker…'}
             </div>
             <div style={{ fontSize: 13, color: C.textMute }}>
               {health.message || (health.state === 'error'
@@ -4747,6 +4874,11 @@ export default function App() {
             {health.expected.length > 0 && (
               <div style={{ fontSize: 12, color: C.textFaint, marginTop: 6 }}>
                 {health.loaded.length}/{health.expected.length} dokumentbanker lastet
+                {(() => {
+                  const remaining = health.expected.filter(
+                    n => !health.loaded.includes(n) && !(health.failed || {})[n])
+                  return remaining.length > 0 ? ` · gjenstår: ${remaining.join(', ')}` : ''
+                })()}
                 {Object.keys(health.failed || {}).length > 0 &&
                   ` · feilet: ${Object.keys(health.failed).join(', ')}`}
               </div>
