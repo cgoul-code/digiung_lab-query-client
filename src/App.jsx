@@ -1376,18 +1376,26 @@ function Modal({ open, onClose, title, subtitle, width = 480, children }) {
     if (!open) setExpanded(false)
   }
 
+  // Escape closes. `onClose` is usually written inline by the caller, so its
+  // identity changes on every render of that caller — this effect re-runs
+  // constantly and must therefore do nothing but swap the listener.
   useEffect(() => {
     if (!open) return
     const onEsc = e => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', onEsc)
+    return () => document.removeEventListener('keydown', onEsc)
+  }, [open, onClose])
+
+  // Once per open: lock the page behind the dialog and put focus in it. Kept
+  // apart from the listener above, since re-running this while typing pulls
+  // focus out of the field one character at a time.
+  useEffect(() => {
+    if (!open) return
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     dialogRef.current?.focus()
-    return () => {
-      document.removeEventListener('keydown', onEsc)
-      document.body.style.overflow = prevOverflow
-    }
-  }, [open, onClose])
+    return () => { document.body.style.overflow = prevOverflow }
+  }, [open])
 
   if (!open) return null
 
