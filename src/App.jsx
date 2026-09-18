@@ -17,6 +17,7 @@ const FILTER_FIELDS = [
   { key: 'tittel',            label: 'Rapport' },
   { key: 'publisert_av',      label: 'Publisert av' },
   { key: 'segment',           label: 'Segment' },
+  { key: 'dokumentkategori',  label: 'Dokumentkategori' },
   { key: 'type_kilde',        label: 'Type kilde' },
   { key: 'malgruppe',         label: 'Målgruppe' },
   { key: 'publisert_arstall', label: 'Årstall' },
@@ -43,6 +44,12 @@ const BUILTIN_QUERY_TYPES = [
 // them having to take a new prop.
 const QUERY_TYPES = [...BUILTIN_QUERY_TYPES]
 
+// Every analysetype's server-side config, keyed by analysetype. Structured types
+// declare the JSON they ask for — which headings to draw, and in what order —
+// so the result views read this rather than naming any template's fields
+// themselves. Mutated in place for the same reason QUERY_TYPES is.
+const QUERY_TYPE_DEFS = {}
+
 function registerQueryTypes(defs) {
   const custom = Object.entries(defs || {})
     .filter(([, cfg]) => cfg && cfg.custom)
@@ -55,6 +62,26 @@ function registerQueryTypes(defs) {
     .sort((a, b) => a.label.localeCompare(b.label, 'no'))
   QUERY_TYPES.length = 0
   QUERY_TYPES.push(...BUILTIN_QUERY_TYPES, ...custom)
+
+  for (const k of Object.keys(QUERY_TYPE_DEFS)) delete QUERY_TYPE_DEFS[k]
+  Object.assign(QUERY_TYPE_DEFS, defs || {})
+}
+
+// The declared shape of an analysetype's answer. An unstructured type — and one
+// whose definition hasn't loaded yet — has none, and the plain finding list is
+// what gets drawn.
+function specFor(queryType) {
+  const cfg = QUERY_TYPE_DEFS[queryType]
+  if (!cfg?.structured) return null
+  const fields = (k) => (cfg[k] || []).filter(f => f && f.key && f.label)
+  return {
+    docNotes:      fields('doc_notes'),
+    docFields:     fields('doc_fields'),
+    itemFields:    fields('agg_item_fields'),
+    topFields:     fields('agg_top_fields'),
+    // What one entry in the synthesis is called, for the count above the result.
+    itemsLabel:    cfg.agg_items_label || 'funn',
+  }
 }
 
 // An admin can pin an explicit set of analysetyper to an index at creation time
@@ -97,15 +124,15 @@ const APP_INFO = {
     'En analyse tar vanligvis 1–3 minutter. Du kan kjøre den uten å skrive noe: da er det analysemalens egen instruks som styrer jobben. Skriver du et spørsmål, spisser det analysen mot akkurat det.',
   ],
   steps: [
-    { label: 'Velg dokumentbank', text: 'Nedtrekket øverst bestemmer hvilke dokumenter analysen leser. Nye dokumenter legges til under «Administrer dokumenter», og må bygges inn i banken før de er med.' },
+    { label: 'Velg dokumentbank', text: 'Nedtrekket øverst bestemmer hvilke dokumenter analysen leser. Nye dokumenter legges til under «Administrer dokumentbank», og må bygges inn i banken før de er med.' },
     { label: 'Velg analysemal', text: 'Rutene under nedtrekket viser malene denne banken tilbyr. Er du usikker på hva en mal gjør, åpne «Se instruksjonene» i verktøylinjen — der står teksten analysen faktisk kjører på.' },
-    { label: 'Still et spørsmål (valgfritt)', text: 'La feltet stå tomt for å kjøre malen slik den er. Et spørsmål snevrer analysen inn mot ett tema, uten å begrense hvilke dokumenter som leses.' },
+    { label: 'Still et spørsmål (valgfritt)', text: 'La feltet stå tomt for å kjøre malen slik den er. Et spørsmål snevrer analysen inn mot ett tema, uten å begrense hvilke dokumenter som leses. Forslagene på den tomme analyseskjermen settes opp per bank under «Administrer dokumentbank».' },
     { label: 'Juster om nødvendig', text: '«Filtre» begrenser hvilke dokumenter som er med. «Analysedybde» styrer hvor mange tekstbiter som hentes fra hvert dokument. Avkrysningen over søkefeltet avgjør om funnene slås sammen på tvers, eller om du bare vil se hvert dokument for seg.' },
     { label: 'Kjør analysen', text: 'Klikk «Analyser». Underveis ser du hvilket dokument som behandles og hvor mange som gjenstår. «Avbryt» stopper jobben.' },
     { label: 'Les resultatet', text: 'Øverst står syntesen på tvers av dokumentene. Under «Analyse per funn» ser du hva hvert dokument bidro med til det enkelte funnet, med sitater og lenker tilbake til kilden.' },
     { label: 'Ta vare på den', text: '«Last ned rapport (.docx)» gir hele analysen som dokument. Kjøringen lagres også i samtaleloggen til venstre, så du kan hente den fram igjen senere.' },
   ],
-  footnote: 'Et dokument er ikke med i analysen før det er bygget inn i dokumentbanken. Rader merket IKKE BYGGET venter på steg 2 i «Administrer dokumenter».',
+  footnote: 'Et dokument er ikke med i analysen før det er bygget inn i dokumentbanken. Rader merket IKKE BYGGET venter på steg 2 i «Administrer dokumentbank».',
 }
 
 // Output language for the analysis. The codes match LANGUAGES in the server's
@@ -142,12 +169,12 @@ const ADD_DOC_HELP = {
     'Å legge til et dokument skjer i to steg, slik skjermbildet er delt opp: først registreres dokumentet med metadata (steg 1), deretter bygges innholdet inn i dokumentbanken slik at det blir søkbart (steg 2).',
   ],
   steps: [
-    { label: 'Velg dokumentbank', text: 'Åpne «Administrer dokumenter» fra skinnen til venstre, og velg riktig bank i nedtrekket «Dokumentbank» øverst i panelet. Alt du legger til havner i den banken som står der.' },
+    { label: 'Velg dokumentbank', text: 'Åpne «Administrer dokumentbank» fra skinnen til venstre, og velg riktig bank i nedtrekket «Dokumentbank» øverst i panelet. Alt du legger til havner i den banken som står der.' },
     { label: 'Åpne skjemaet', text: 'Klikk «+ Legg til dokument(er)» til høyre i steg 1.' },
     { label: 'Velg filer', text: 'Filvelgeren åpnes med en gang. Merk én eller flere PDF-, DOCX- eller PPTX-filer — hold Ctrl eller Shift for å merke flere, eller Ctrl+A for alt i mappen. Ett dokument behandles akkurat som mange.' },
     { label: 'Se over utvalget', text: 'Listen viser hva som legges til, med størrelse per fil. Ta bort haken på det du ikke vil ha med. Dokumenter som allerede ligger i listen filtreres bort automatisk og røres ikke.' },
     { label: 'Legg til', text: 'Klikk «Legg til». Er «Avled metadata med AI» krysset av, leses hvert dokument og Tittel, Segment, Publisert av, Årstall, Type kilde, Målgruppe og Oppsummering fylles ut. Uten den får dokumentet en tittel utledet av filnavnet.' },
-    { label: 'Rett metadata', text: 'Klikk «Rediger» på en rad for å justere feltene. Dette er de samme feltene du filtrerer på i analysene, så det lønner seg at de er ryddige og konsekvente.' },
+    { label: 'Rett metadata', text: 'Klikk «Rediger» på en rad for å justere feltene. Dette er de samme feltene du filtrerer på i analysene, så det lønner seg at de er ryddige og konsekvente. «Dokumentkategori» fylles ikke ut av AI — den setter du selv, og feltet foreslår kategoriene banken allerede bruker. Rettet metadata gjelder med en gang og krever ingen ny bygging.' },
     { label: 'Oppdater dokumentbanken', text: 'Nederst, i steg 2 «Bygg dokumentbanken», klikker du «Oppdater dokumentbanken» — da prosesseres kun de nye oppføringene, og dokumentet blir søkbart. «Bygg dokumentbanken på nytt» sletter hele banken og bygger den opp fra bunnen; det tar mye lengre tid og trengs normalt ikke.' },
   ],
   footnote: 'Trinnene over registrerer bare dokumentet. Det er først etter «Oppdater dokumentbanken» at innholdet ligger i dokumentbanken og kan søkes i.',
@@ -181,6 +208,9 @@ const EXAMPLE_QUESTIONS = {
     'Hvilke kunnskapshull bør ledergruppen være oppmerksom på?',
   ],
 }
+
+// The server caps a bank's list at the same number.
+const MAX_EXAMPLE_QUESTIONS = 8
 
 // Questions stored on the server, keyed by bank. Mutated like the theme object
 // C, so the many read sites pick up the loaded set without threading a prop.
@@ -736,7 +766,11 @@ function SourceTags({ sources }) {
   )
 }
 
-// ── Strategisk risiko rendering ────────────────────────────────────────────────
+// ── Structured analysis rendering ─────────────────────────────────────────────
+// Strategisk risiko and every template built in the veiviseren answer in a shape
+// they declare themselves. These components draw whatever the declaration says,
+// in the order it says it — so a new template renders without any code here
+// learning its field names.
 
 function LabeledList({ label, values, tint }) {
   const vals = (values || []).filter(v => String(v).trim())
@@ -751,15 +785,20 @@ function LabeledList({ label, values, tint }) {
   )
 }
 
-function RiskItem({ item }) {
+// The margin-stripe colour an author chose for a field. Legacy 'danger' → red.
+function tintFor(field) {
+  if (!field.tone) return undefined
+  return field.tone === 'danger' ? C.danger : field.tone
+}
+
+function StructuredItem({ item, fields }) {
   return (
     <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
       <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6, color: C.text }}>{item.label}</div>
       {item.beskrivelse && <div style={{ fontSize: 14, color: C.textMute, lineHeight: 1.65, marginBottom: 8 }}>{item.beskrivelse}</div>}
-      <LabeledList label="Drivere"      values={item.drivere} />
-      <LabeledList label="Sårbarheter"  values={item.sarbarheter} />
-      <LabeledList label="Konsekvenser" values={item.konsekvenser} />
-      <LabeledList label="Risikoer"     values={item.risikoer} tint={C.danger} />
+      {fields.map(f => (
+        <LabeledList key={f.key} label={f.label} values={item[f.key]} tint={tintFor(f)} />
+      ))}
       <SourceTags sources={item.sources} />
     </div>
   )
@@ -812,7 +851,7 @@ function chunksForPages(entry, pages) {
 
 // One document's contribution to one finding: what was pulled out of it, and
 // the passages it was pulled from.
-function FindingSource({ source, entry }) {
+function FindingSource({ source, entry, spec }) {
   const [open, setOpen] = useState(false)
   const isObj = source && typeof source === 'object'
   const tittel = isObj ? (source.tittel || '') : String(source)
@@ -829,9 +868,13 @@ function FindingSource({ source, entry }) {
   }
 
   const s = entry.structured || {}
-  // Risk documents come back as a structured chain, everything else as a plain
-  // list of findings — both answer «what did this document contribute».
-  const extracted = s.kildefunn?.length ? s.kildefunn : (entry.findings || [])
+  // A structured document comes back as an object, everything else as a plain
+  // list of findings — both answer «what did this document contribute». Under a
+  // finding there is room for one list, so it is the first field the template
+  // declared: what the document was read for.
+  const lead = spec?.docFields?.[0]
+  const extracted = (lead && s[lead.key]?.length) ? s[lead.key] : (entry.findings || [])
+  const leadNotes = (spec?.docNotes || []).filter(f => f.lead && s[f.key])
   const chunks = chunksForPages(entry, pages)
   const parts = [entry.tittel || entry.filename]
   if (entry.publisert_av) parts.push(entry.publisert_av)
@@ -846,9 +889,7 @@ function FindingSource({ source, entry }) {
           ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, textDecoration: 'none' }}>{heading} ↗</a>
           : heading}
       </div>
-      {s.relevans && (
-        <div style={{ fontSize: 12.5, color: C.textMute, marginBottom: 6, fontStyle: 'italic' }}>{s.relevans}</div>
-      )}
+      <LeadNotes notes={leadNotes} values={s} fontSize={12.5} gap={6} />
       <LabeledList label="Trukket ut fra dokumentet" values={extracted} />
       {chunks.length > 0 && (
         <div style={{ marginTop: 6 }}>
@@ -868,7 +909,7 @@ function FindingSource({ source, entry }) {
 // The evidence half of a result: every finding followed by the documents behind
 // it. Shared by all analysis types — only the shape of what each document
 // contributed differs, and FindingSource absorbs that.
-function FindingsBreakdown({ items, perDoc }) {
+function FindingsBreakdown({ items, perDoc, spec }) {
   const [open, setOpen] = useState(false)
   const [leftoversOpen, setLeftoversOpen] = useState(false)
   const byTitle = new Map()
@@ -902,7 +943,7 @@ function FindingsBreakdown({ items, perDoc }) {
         </div>
         {open && (items.length === 0
           ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen funn å bryte ned.</div>
-          : items.map((item, i) => <FindingDetail key={i} item={item} byTitle={byTitle} />))}
+          : items.map((item, i) => <FindingDetail key={i} item={item} byTitle={byTitle} spec={spec} />))}
       </div>
       {leftovers.length > 0 && (
         <div style={{ marginTop: 22, paddingTop: 18, borderTop: `1px solid ${C.border}` }}>
@@ -946,7 +987,7 @@ function FindingsBreakdown({ items, perDoc }) {
 // One finding with the documents behind it. Grouping by finding rather than by
 // document puts a claim next to its evidence, instead of leaving the reader to
 // reassemble it from every document section in turn.
-function FindingDetail({ item, byTitle }) {
+function FindingDetail({ item, byTitle, spec }) {
   const sources = item.sources || []
   return (
     <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
@@ -959,14 +1000,28 @@ function FindingDetail({ item, byTitle }) {
       {sources.length === 0
         ? <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: 'italic', marginTop: 8 }}>Ingen kilder er registrert for dette funnet.</div>
         : sources.map((s, i) => (
-            <FindingSource key={i} source={s}
+            <FindingSource key={i} source={s} spec={spec}
               entry={byTitle.get(normTitle(typeof s === 'object' ? s.tittel : s))} />
           ))}
     </div>
   )
 }
 
-function RiskDocAnalysis({ entry }) {
+// The assessments a template places before a document's lists. One reads as a
+// line of its own; with several, each needs its label to be told apart.
+function LeadNotes({ notes, values, fontSize, gap }) {
+  if (!notes.length) return null
+  const labelled = notes.length > 1
+  return notes.map(f => (
+    <div key={f.key} style={{ fontSize, color: C.textMute, marginBottom: gap, fontStyle: 'italic' }}>
+      {labelled && <span style={{ fontWeight: 600, fontStyle: 'normal' }}>{f.label}: </span>}
+      {values[f.key]}
+    </div>
+  ))
+}
+
+// One document's full answer, in the shape its template asked for.
+function StructuredDocAnalysis({ entry, spec }) {
   const [showChunks, setShowChunks] = useState(false)
   const s = entry.structured || {}
   const parts = [entry.tittel || entry.filename]
@@ -975,6 +1030,8 @@ function RiskDocAnalysis({ entry }) {
   const heading = parts.filter(Boolean).join(' · ')
   const url = (entry.kilde_url || '').trim()
   const chunks = entry.chunks || []
+  const notes = spec?.docNotes || []
+  const leadNotes = notes.filter(f => f.lead && s[f.key])
   return (
     <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
       <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: C.text }}>
@@ -982,18 +1039,17 @@ function RiskDocAnalysis({ entry }) {
           ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, textDecoration: 'none' }}>{heading} ↗</a>
           : heading}
       </div>
-      {s.relevans && <div style={{ fontSize: 13, color: C.textMute, marginBottom: 8, fontStyle: 'italic' }}>{s.relevans}</div>}
-      <LabeledList label="Kildefunn"            values={s.kildefunn} />
-      <LabeledList label="Drivere"              values={s.drivere} />
-      <LabeledList label="Mulige sårbarheter"   values={s.sarbarheter} />
-      <LabeledList label="Mulige konsekvenser"  values={s.konsekvenser} />
-      <LabeledList label="Foreløpige risikoer"  values={s.risikoer} tint={C.danger} />
-      <LabeledList label="Avklaringsspørsmål"   values={s.avklaringssporsmal} />
-      {s.kildegrunnlag_styrke && (
-        <div style={{ fontSize: 12, color: C.textFaint, marginTop: 6 }}>
-          <span style={{ fontWeight: 600 }}>Kildegrunnlag:</span> {s.kildegrunnlag_styrke}
+      <LeadNotes notes={leadNotes} values={s} fontSize={13} gap={8} />
+      {(spec?.docFields || []).map(f => (
+        <LabeledList key={f.key} label={f.label} values={s[f.key]} tint={tintFor(f)} />
+      ))}
+      {/* Nothing declared, or nothing matched it — show what came back anyway. */}
+      {!spec?.docFields?.length && <LabeledList label="Funn" values={entry.findings} />}
+      {notes.filter(f => !f.lead && s[f.key]).map(f => (
+        <div key={f.key} style={{ fontSize: 12, color: C.textFaint, marginTop: 6 }}>
+          <span style={{ fontWeight: 600 }}>{f.label}:</span> {s[f.key]}
         </div>
-      )}
+      ))}
       {chunks.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <SectionToggle open={showChunks} onToggle={() => setShowChunks(p => !p)} label={`Kildehenvisninger (${chunks.length})`} />
@@ -1111,7 +1167,9 @@ function AggregateResultCard({ data }) {
     || { key: data.query_type, label: data.query_type || 'Analyse' }
   const items = data[outputKeyFor(data.query_type)] || []
   const isLoading = data._loading
-  const isRisk = data.query_type === 'strategisk_risiko'
+  // Structured templates answer in a shape they declare; everything else in the
+  // flat finding list. The spec is what tells the two apart.
+  const spec = specFor(data.query_type)
   const perDoc = data.per_doc_findings || []
   const sectionHeading = { fontSize: 13, fontWeight: 700, color: C.text, margin: '4px 0 2px', textTransform: 'uppercase', letterSpacing: '.04em' }
   return (
@@ -1131,9 +1189,9 @@ function AggregateResultCard({ data }) {
         <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14, display: 'flex', gap: 16 }}>
           <span>{data.documents_visited} dokumenter besøkt</span>
           <span>{data.documents_with_findings} med funn</span>
-          {isRisk
+          {spec
             ? (data.aggregated
-                ? <span>{items.length} risikoområder</span>
+                ? <span>{items.length} {spec.itemsLabel}</span>
                 : <span>analyse per dokument</span>)
             : (data.aggregated === false
                 ? <span>analyse per dokument</span>
@@ -1141,33 +1199,37 @@ function AggregateResultCard({ data }) {
         </div>
       )}
 
-      {!isLoading && isRisk && (
-        <>
-          {data.aggregated && (items.length > 0 || (data.monstre || []).length > 0) && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={sectionHeading}>Syntese på tvers av dokumentene</div>
-              <LabeledList label="Overordnede mønstre" values={data.monstre} />
-              {items.map((item, i) => <RiskItem key={i} item={item} />)}
-              <div style={{ marginTop: 12 }}>
-                <LabeledList label="Usikkerhet og kunnskapshull" values={data.usikkerhet_kunnskapshull} />
-                <LabeledList label="Spørsmål til ledergruppen" values={data.sporsmal_til_ledergruppen} />
+      {!isLoading && spec && (() => {
+        const leadTop = spec.topFields.filter(f => f.lead)
+        const tailTop = spec.topFields.filter(f => !f.lead)
+        const hasTop  = spec.topFields.some(f => (data[f.key] || []).length > 0)
+        return (
+          <>
+            {data.aggregated && (items.length > 0 || hasTop) && (
+              <div style={{ marginBottom: 18 }}>
+                <div style={sectionHeading}>Syntese på tvers av dokumentene</div>
+                {leadTop.map(f => <LabeledList key={f.key} label={f.label} values={data[f.key]} tint={tintFor(f)} />)}
+                {items.map((item, i) => <StructuredItem key={i} item={item} fields={spec.itemFields} />)}
+                <div style={{ marginTop: 12 }}>
+                  {tailTop.map(f => <LabeledList key={f.key} label={f.label} values={data[f.key]} tint={tintFor(f)} />)}
+                </div>
               </div>
-            </div>
-          )}
-          {data.aggregated
-            ? <FindingsBreakdown items={items} perDoc={perDoc} />
-            : (
-              <>
-                <div style={sectionHeading}>Analyse per dokument</div>
-                {perDoc.length === 0
-                  ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen dokumenter ga funn.</div>
-                  : perDoc.map((entry, i) => <RiskDocAnalysis key={i} entry={entry} />)}
-              </>
             )}
-        </>
-      )}
+            {data.aggregated
+              ? <FindingsBreakdown items={items} perDoc={perDoc} spec={spec} />
+              : (
+                <>
+                  <div style={sectionHeading}>Analyse per dokument</div>
+                  {perDoc.length === 0
+                    ? <div style={{ fontSize: 14, color: C.textFaint, padding: '0.5rem 0' }}>Ingen dokumenter ga funn.</div>
+                    : perDoc.map((entry, i) => <StructuredDocAnalysis key={i} entry={entry} spec={spec} />)}
+                </>
+              )}
+          </>
+        )
+      })()}
 
-      {!isLoading && !isRisk && (
+      {!isLoading && !spec && (
         data.aggregated === false ? (
           // No synthesis ran, so there are no findings to group documents under.
           <>
@@ -1210,6 +1272,8 @@ function AggregateResultCard({ data }) {
 const ADMIN_FIELDS = [
   { key: 'tittel',            label: 'Tittel',        type: 'text' },
   { key: 'segment',           label: 'Segment',       type: 'text' },
+  // Set by hand, not derived: suggestions come from what the bank already uses.
+  { key: 'dokumentkategori',  label: 'Dokumentkategori', type: 'text', suggest: true },
   { key: 'publisert_av',      label: 'Publisert av',  type: 'text' },
   { key: 'publisert_arstall', label: 'Årstall',       type: 'number' },
   { key: 'type_kilde',        label: 'Type kilde',    type: 'text' },
@@ -1261,6 +1325,7 @@ const CSV_COLUMNS = [
   { header: 'Kilde',            value: e => entrySource(e) },
   { header: 'Kildetype',        value: e => (e.url ? 'Nettside' : 'Fil') },
   { header: 'Segment',          value: e => e.segment || '' },
+  { header: 'Dokumentkategori', value: e => e.dokumentkategori || '' },
   { header: 'Publisert av',     value: e => e.publisert_av || '' },
   { header: 'Årstall',          value: e => e.publisert_arstall ?? '' },
   { header: 'Type kilde',       value: e => e.type_kilde || '' },
@@ -1393,7 +1458,9 @@ function Modal({ open, onClose, title, subtitle, width = 480, children }) {
   )
 }
 
-function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged, editingKey, setEditingKey, unbuilt }) {
+const CATEGORY_LIST_ID = 'dokumentkategori-forslag'
+
+function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged, editingKey, setEditingKey, unbuilt, categories }) {
   const [draft, setDraft] = useState(entry)
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -1566,12 +1633,17 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
                         style={inp.textarea} />
                     ) : (
                       <input type={f.type} value={draft[f.key] ?? ''}
+                        list={f.suggest ? CATEGORY_LIST_ID : undefined}
                         onChange={e => setDraft({ ...draft, [f.key]: f.type === 'number' ? (e.target.value === '' ? null : parseInt(e.target.value)) : e.target.value })}
                         style={inp.text} />
                     )}
                   </div>
                 ))}
               </div>
+              {/* Only the open dialog is mounted, so one fixed id is enough. */}
+              <datalist id={CATEGORY_LIST_ID}>
+                {(categories || []).map(c => <option key={c} value={c} />)}
+              </datalist>
               {deriving && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, fontSize: 12, color: C.accent }}>
                   <LoadingDots /> Avleder metadata med AI…
@@ -2478,13 +2550,16 @@ function ListLoading() {
   )
 }
 
-function StepSection({ step, title, description, action, children, locked }) {
+function StepSection({ step, title, description, action, children, locked, muted }) {
   return (
     <section style={{ marginBottom: 24 }} aria-busy={locked || undefined}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10, flexWrap: 'wrap', ...lockedWhile(locked) }}>
         <div style={{
           flexShrink: 0, width: 26, height: 26, borderRadius: 999,
-          background: C.accent, color: '#fff',
+          boxSizing: 'border-box',
+          // Muted marks a section that stands apart from the numbered sequence.
+          background: muted ? C.bg : C.accent, color: muted ? C.textMute : '#fff',
+          border: muted ? `1px solid ${C.border}` : 'none',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: 13, fontWeight: 700, marginTop: 1,
         }}>{step}</div>
@@ -2498,6 +2573,141 @@ function StepSection({ step, title, description, action, children, locked }) {
         {children}
       </div>
     </section>
+  )
+}
+
+function BubbleIcon() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+      strokeWidth="1.6" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 3h11v7.5h-6L4.5 13v-2.5h-2z" />
+    </svg>
+  )
+}
+
+// The suggestions offered on an empty analysis screen for one bank. Saved on
+// their own, apart from the document list — they never need a rebuild.
+function ExampleQuestions({ server, indexName, onChanged }) {
+  const [saved, setSaved] = useState(null)      // null while loading
+  const [draft, setDraft] = useState([])
+  const [loadErr, setLoadErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const base = server.replace(/\/$/, '')
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${base}/admin/example-questions`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(map => {
+        if (cancelled) return
+        const qs = Array.isArray(map?.[indexName]) ? map[indexName] : []
+        setSaved(qs); setDraft(qs)
+      })
+      .catch(status => {
+        if (cancelled) return
+        setSaved([]); setDraft([])
+        setLoadErr(status === 404
+          ? 'Serveren har ikke støtte for eksempelspørsmål ennå — den må deployes før endringer kan lagres.'
+          : 'Kunne ikke hente de lagrede spørsmålene.')
+      })
+    return () => { cancelled = true }
+  }, [base, indexName])
+
+  const builtIn = EXAMPLE_QUESTIONS[indexName] || EXAMPLE_QUESTIONS._default
+  const clean = draft.map(q => q.trim()).filter(Boolean)
+  // Blank rows don't count: they are dropped on save anyway.
+  const dirty = saved != null && JSON.stringify(clean) !== JSON.stringify(saved)
+  const touched = saved != null && JSON.stringify(draft) !== JSON.stringify(saved)
+  const full = draft.length >= MAX_EXAMPLE_QUESTIONS
+
+  const edit = (fn) => { setDraft(fn); setMsg(''); setErr('') }
+
+  const save = async () => {
+    setBusy(true); setErr(''); setMsg('')
+    try {
+      const res = await fetch(`${base}/admin/example-questions/${encodeURIComponent(indexName)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ questions: clean }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        throw new Error(data.error || (res.status === 404
+          ? 'Serveren har ikke støtte for eksempelspørsmål ennå.'
+          : res.statusText))
+      }
+      setSaved(data.questions); setDraft(data.questions); setLoadErr('')
+      setMsg(data.using_defaults
+        ? 'Lagret. Analysen viser nå standardspørsmålene.'
+        : `Lagret — ${data.questions.length} spørsmål.`)
+      await onChanged?.()
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  if (saved == null) {
+    return <div style={{ fontSize: 12.5, color: C.textFaint }}>Henter spørsmålene<LoadingDots /></div>
+  }
+
+  const disabledLook = { opacity: 0.5, cursor: 'not-allowed' }
+
+  return (
+    <div style={{ maxWidth: 720 }}>
+      {loadErr && <div style={{ fontSize: 12, color: C.textMute, marginBottom: 10 }}>{loadErr}</div>}
+
+      {draft.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.textMute, marginBottom: 4 }}>
+          <div style={{ marginBottom: 6 }}>Banken har ingen egne spørsmål. Analysen viser disse standardspørsmålene:</div>
+          <ul style={{ margin: '0 0 10px', paddingLeft: 18, color: C.textFaint, lineHeight: 1.6 }}>
+            {builtIn.map((q, i) => <li key={i}>{q}</li>)}
+          </ul>
+        </div>
+      ) : draft.map((q, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+          <input
+            value={q}
+            onChange={e => edit(d => d.map((v, j) => (j === i ? e.target.value : v)))}
+            placeholder="Skriv et spørsmål…"
+            maxLength={300}
+            aria-label={`Eksempelspørsmål ${i + 1}`}
+            style={{ ...inp.text, flex: 1 }}
+          />
+          <button
+            onClick={() => edit(d => d.filter((_, j) => j !== i))}
+            disabled={busy}
+            title="Fjern spørsmålet"
+            aria-label={`Fjern spørsmål ${i + 1}`}
+            style={{ ...btn.danger }}>🗑</button>
+        </div>
+      ))}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
+        {draft.length === 0 && (
+          <button onClick={() => edit(() => [...builtIn])} disabled={busy} style={{ ...btn.ghost }}
+            title="Kopier standardspørsmålene inn som utgangspunkt">
+            Rediger disse
+          </button>
+        )}
+        <button
+          onClick={() => edit(d => [...d, ''])}
+          disabled={busy || full}
+          title={full ? `Maks ${MAX_EXAMPLE_QUESTIONS} spørsmål` : 'Legg til et spørsmål'}
+          style={{ ...btn.ghost, ...(busy || full ? disabledLook : {}) }}>
+          + Legg til spørsmål
+        </button>
+        <button onClick={save} disabled={busy || !dirty}
+          style={{ ...btn.primary, ...(busy || !dirty ? disabledLook : {}) }}>
+          {busy ? 'Lagrer…' : 'Lagre spørsmålene'}
+        </button>
+        <button onClick={() => edit(() => saved)} disabled={busy || !touched}
+          style={{ ...btn.ghost, ...(busy || !touched ? disabledLook : {}) }}>
+          Forkast endringer
+        </button>
+        {dirty && !busy && <span style={{ fontSize: 12, color: C.warn }}>Ikke lagret</span>}
+        {msg && <span style={{ fontSize: 12, color: C.success }}>{msg}</span>}
+      </div>
+      {err && <div style={{ fontSize: 12, color: C.danger, marginTop: 8 }}>{err}</div>}
+    </div>
   )
 }
 
@@ -2654,7 +2864,7 @@ function AddExistingReports({ server, indexName, entries, onAdded, onClose }) {
   )
 }
 
-function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onPendingChange, onBusyChange, registerRollback }) {
+function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onPendingChange, onBusyChange, registerRollback, onExamplesChanged }) {
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
   const [adding, setAdding] = useState(false)
@@ -2978,12 +3188,17 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const markDirty = () => { setDirty(true); onPendingChange?.(true) }
   const [restoring, setRestoring] = useState(null)   // { done, total }
 
-  // Edited metadata is what /query filters on, and it only reaches the index on
-  // the next build — so an edit counts as pending just like an added document.
+  // Metadata is labels, not text: the server writes an edit straight onto the
+  // document's nodes, so it applies at once and nothing is left for the build.
   const handleSaved   = (updated) => {
     setEntries(es => es.map(e => entryKey(e) === entryKey(updated) ? updated : e))
-    markDirty()
   }
+
+  // The categories this bank already uses, offered while editing so the values
+  // stay consistent without being locked to a fixed list.
+  const categories = useMemo(() => [...new Set(
+    (entries || []).map(e => (e.dokumentkategori || '').trim()).filter(Boolean)
+  )].sort((a, b) => a.localeCompare(b, 'no')), [entries])
   const handleDeleted = (key) => {
     setEntries(es => es.filter(e => entryKey(e) !== key))
     // The document leaves the dokumentbank on the next build, so until then
@@ -3015,7 +3230,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ fontSize: 20, fontWeight: 600, color: C.text }}>Administrer dokumenter</div>
+            <div style={{ fontSize: 20, fontWeight: 600, color: C.text }}>Administrer dokumentbank</div>
             <InfoButton
               title="Legge til et dokument"
               paragraphs={ADD_DOC_HELP.intro}
@@ -3294,6 +3509,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                         entry={entry} server={server} indexName={indexName}
                         onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load}
                         editingKey={editingKey} setEditingKey={setEditingKey}
+                        categories={categories}
                         unbuilt={unbuiltKeys.has(entryKey(entry))} />
                     ))}
                   </tbody>
@@ -3331,6 +3547,18 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                 load()
                 refreshPending()
               }} />
+          </StepSection>
+
+          <StepSection
+            locked={!!runningJob}
+            muted
+            step={<BubbleIcon />}
+            title="Eksempelspørsmål"
+            description="Forslagene som vises på en tom analyseskjerm for denne banken. De lagres for seg og krever ingen ny bygging. Lar du listen stå tom, vises standardspørsmålene."
+          >
+            {indexName
+              ? <ExampleQuestions key={indexName} server={server} indexName={indexName} onChanged={onExamplesChanged} />
+              : <div style={{ fontSize: 12.5, color: C.textFaint }}>Velg en dokumentbank først.</div>}
           </StepSection>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4, ...lockedWhile(!!runningJob) }}>
@@ -3449,20 +3677,769 @@ const SIDEBAR_TOP = 61  // height of the sticky top bar
 // expands into a working panel, so document admin opens alongside the analysis
 // view instead of replacing it. Wider than the log — the document table needs
 // the room.
+// ── Veiviser for nye analysemaler ─────────────────────────────────────────────
+// A template is two instructions and two JSON shapes, and writing all four as
+// prose means keeping an instruction in step with an example further down it.
+// The veiviser asks for the parts instead — what to ask each document, how to
+// answer, which concepts to keep apart, and which fields to hand back — and the
+// server writes the prompts from the answers. The answers are stored with the
+// template, so reopening it shows the questions again rather than the prose.
+
+const EMPTY_WIZARD = {
+  rolle: '', oppdrag: '', svarstil: '', irrelevant_regel: '',
+  begreper: [],
+  doc_fields: [], doc_notes: [],
+  agg_rolle: '', agg_oppdrag: '', agg_svarstil: '',
+  agg_svarstil_lik: true,
+  agg_regler: ['monstre', 'sla_sammen', 'kilder', 'ikke_nytt', 'begreper'],
+  agg_item_fields: [], agg_top_fields: [],
+  item_label: '', item_beskrivelse: '', items_label: '',
+}
+
+// How the synthesis merges findings. The sentences are the server's
+// (WIZARD_AGG_RULES in query_server.py), shown verbatim: what is ticked is what
+// the model reads. `begreper` is handled on its own, since it depends on step 2.
+const AGG_RULES = [
+  { key: 'monstre',      text: 'Identifiser mønstre som går igjen på tvers av dokumentene.' },
+  { key: 'sla_sammen',   text: 'Slå sammen funn som overlapper eller beskriver det samme, i stedet for å gjenta dem.' },
+  { key: 'kilder',       text: 'Oppgi for hvert funn hvilke dokumenter (titler) som peker i samme retning.' },
+  { key: 'flere_kilder', text: 'Prioriter funn som støttes av flere dokumenter, og si tydelig fra når et funn bare bygger på ett.' },
+  { key: 'sorter',       text: 'List de best underbygde funnene først.' },
+  { key: 'ikke_nytt',    text: 'Ikke legg til funn som ikke finnes i analysene per dokument.' },
+]
+
+// Rules are editable free text ({text, on}). Seed the list from the built-in
+// defaults for a set of ticked keys — used for new templates and to reopen
+// older ones saved before the rules became editable.
+function rulesFromKeys(keys) {
+  const on = new Set(keys || [])
+  return AGG_RULES.map(r => ({ text: r.text, on: on.has(r.key) }))
+}
+
+// Where the summary starts when nothing is written yet — the rules and fields
+// below it do most of the work.
+const DEFAULT_AGG_OPPDRAG = 'Du får analysene av hvert enkelt dokument og skal slå dem sammen til en samlet oversikt på tvers av dokumentene.'
+
+// Strategisk risiko, as the veiviser would have been filled in to produce it.
+// Offered as a starting point because it is the worked example people know: the
+// quickest way to see what belongs in each box is to read one that is filled.
+const RISK_EXAMPLE = {
+  label: 'Strategisk risiko (kopi)',
+  key: 'strategisk_risiko_kopi',
+  description: 'Analysekjede per dokument: driver → sårbarhet → konsekvens → risiko',
+  default_question: 'Hvilke strategiske drivere, sårbarheter, konsekvenser og risikoer fremgår av dokumentet?',
+  wizard: {
+    rolle: 'Du er en analyseassistent for strategisk risikoanalyse i Helsedirektoratet.',
+    oppdrag: 'Du analyserer ett kildedokument om gangen (årsrapporter, tildelingsbrev, hovedinstruks, strategi, riksrevisjonsrapport o.l.) og utleder mulige strategiske risikoer.\nArbeid etter analysekjeden: kildefunn -> driver -> relevans -> sårbarhet -> konsekvens -> risiko -> avklaringsspørsmål.',
+    svarstil: 'Bruk et nøkternt, presist og direktoratstilpasset språk. Unngå konsulentspråk, dramatisering og bastante konklusjoner. Ikke foreslå tiltak. Ikke forveksle drivere, sårbarheter, konsekvenser og risiko. Ikke gjør operative forhold strategiske uten å forklare hvorfor de har strategisk betydning.',
+    irrelevant_regel: 'Hvis dokumentet ikke er relevant for strategisk risiko',
+    begreper: [
+      { term: 'Driver', definisjon: 'et eksternt utviklingstrekk, styringskrav eller rammevilkår som kan påvirke direktoratets oppdrag, handlingsrom, prioriteringer eller måloppnåelse over tid. En driver er IKKE en risiko i seg selv.' },
+      { term: 'Sårbarhet', definisjon: 'et forhold ved direktoratets ansvar, rolle, kapasitet, kompetanse, styring, samhandling, data, teknologi, regelverksetterlevelse eller avhengigheter som kan svekke evnen til å møte en driver.' },
+      { term: 'Konsekvens', definisjon: 'hva det kan bety for måloppnåelse, samfunnsoppdrag, ressursbruk, styring og kontroll, sikkerhet, beredskap, legitimitet eller tillit.' },
+      { term: 'Risiko', definisjon: 'en usikkerhet som kan påvirke direktoratets evne til å ivareta samfunnsoppdrag, måloppnåelse, styringskrav eller prioriteringsevne over 3-5 år. Risiko oppstår når en driver møter en sårbarhet og kan gi vesentlig konsekvens.' },
+    ],
+    doc_notes: [
+      { key: 'relevans', label: 'Relevans', beskrivelse: 'kort vurdering av dokumentets relevans for strategisk risiko', lead: true },
+      { key: 'kildegrunnlag_styrke', label: 'Kildegrunnlagets styrke', beskrivelse: 'kort vurdering av hvor sterkt kildegrunnlaget er' },
+    ],
+    doc_fields: [
+      { key: 'kildefunn', label: 'Kildefunn', beskrivelse: 'det dokumentet faktisk sier, direkte forankret i kilden' },
+      { key: 'drivere', label: 'Drivere', beskrivelse: 'mulige strategiske drivere' },
+      { key: 'sarbarheter', label: 'Mulige sårbarheter', beskrivelse: 'mulige sårbarheter som bør undersøkes, formulert som hypoteser/spørsmål' },
+      { key: 'konsekvenser', label: 'Mulige konsekvenser', beskrivelse: 'mulige konsekvenser' },
+      { key: 'risikoer', label: 'Foreløpige risikoer', beskrivelse: 'foreløpige strategiske risikoer, formulert som usikkerhet over 3-5 år', tone: 'danger' },
+      { key: 'avklaringssporsmal', label: 'Avklaringsspørsmål', beskrivelse: 'spørsmål til videre avklaring', context: false },
+    ],
+    agg_rolle: 'Du er analytiker i risikoteamet.',
+    agg_oppdrag: 'Du får analyser per dokument og skal lage en syntese på tvers: en samlet oversikt over mulige strategiske risikoområder.',
+    agg_regler: ['monstre', 'sla_sammen', 'kilder', 'ikke_nytt', 'begreper'],
+    agg_svarstil_lik: false,
+    agg_svarstil: 'Bruk et nøkternt, presist og direktoratstilpasset språk. Ikke foreslå tiltak.',
+    agg_item_fields: [
+      { key: 'drivere', label: 'Drivere', beskrivelse: 'drivere som støtter temaet' },
+      { key: 'sarbarheter', label: 'Sårbarheter', beskrivelse: 'mulige sårbarheter som bør undersøkes' },
+      { key: 'konsekvenser', label: 'Konsekvenser', beskrivelse: 'mulige konsekvenser' },
+      { key: 'risikoer', label: 'Risikoer', beskrivelse: 'foreløpige strategiske risikoer', tone: 'danger' },
+    ],
+    agg_top_fields: [
+      { key: 'monstre', label: 'Overordnede mønstre', beskrivelse: 'overordnede mønstre på tvers av dokumentene', lead: true },
+      { key: 'usikkerhet_kunnskapshull', label: 'Usikkerhet og kunnskapshull', beskrivelse: 'usikkerhet og kunnskapshull' },
+      { key: 'sporsmal_til_ledergruppen', label: 'Spørsmål til ledergruppen', beskrivelse: 'spørsmål til ledergruppen' },
+    ],
+    item_label: 'Kort navn på risikoområde/tema',
+    item_beskrivelse: '1-3 setninger',
+    items_label: 'risikoområder',
+  },
+}
+
+// A JSON key suggested from the heading, so nobody has to invent one: Norwegian
+// letters folded the way the existing field keys already spell them.
+function slugKey(label) {
+  return (label || '')
+    .toLowerCase()
+    .replace(/[æ]/g, 'ae').replace(/[ø]/g, 'o').replace(/[å]/g, 'a')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40)
+}
+
+const wzLabel = { ...metaLabel, marginBottom: 4 }
+const wzHint = { fontSize: 11, color: C.textFaint, marginTop: 3, lineHeight: 1.55 }
+
+function WizardArea({ value, onChange, placeholder, minHeight = 70 }) {
+  return (
+    <AutoTextarea
+      value={value} onChange={onChange} placeholder={placeholder} spellCheck={false}
+      style={{
+        width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+        minHeight, padding: '8px 12px', borderRadius: 8, fontSize: 12.5,
+        background: C.surface, color: C.text, border: `1px solid ${C.border}`,
+        lineHeight: 1.6, outline: 'none', fontFamily: 'inherit',
+      }} />
+  )
+}
+
+// One row of a repeatable list, with the room its own controls need.
+function RowShell({ children, onRemove, onUp, onDown, tight }) {
+  const mini = {
+    border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+    borderRadius: 6, width: 24, height: 24, cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: 0,
+  }
+  return (
+    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 10 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: tight ? 0 : 18 }}>
+        <button onClick={onUp} title="Flytt opp" style={mini}>↑</button>
+        <button onClick={onDown} title="Flytt ned" style={mini}>↓</button>
+        {onRemove && <button onClick={onRemove} title="Fjern" style={{ ...mini, color: C.danger }}>×</button>}
+      </div>
+    </div>
+  )
+}
+
+// The concepts the analysis must keep apart — the part of the risk template that
+// does the most work, since most confusion in an answer is two of these merged.
+function ConceptRows({ rows, onChange }) {
+  const set = (i, patch) => onChange(rows.map((r, j) => j === i ? { ...r, ...patch } : r))
+  const move = (i, d) => {
+    const j = i + d
+    if (j < 0 || j >= rows.length) return
+    const next = [...rows]; [next[i], next[j]] = [next[j], next[i]]; onChange(next)
+  }
+  return (
+    <div>
+      {rows.map((row, i) => (
+        <RowShell key={i}
+          onRemove={() => onChange(rows.filter((_, j) => j !== i))}
+          onUp={() => move(i, -1)} onDown={() => move(i, 1)}>
+          <input value={row.term} onChange={e => set(i, { term: e.target.value })}
+            placeholder="Begrep, f.eks. Driver" style={{ ...inp.text, marginBottom: 6, fontWeight: 600 }} />
+          <WizardArea value={row.definisjon} onChange={e => set(i, { definisjon: e.target.value })}
+            placeholder="Hva begrepet betyr — og gjerne hva det ikke er" minHeight={52} />
+        </RowShell>
+      ))}
+      <button onClick={() => onChange([...rows, { term: '', definisjon: '' }])} style={btn.ghost}>
+        + Legg til begrep
+      </button>
+    </div>
+  )
+}
+
+// Colours an author can put on a field's margin stripe. Fixed hexes so the
+// stripe reads the same in light and dark; legacy 'danger' maps to the first.
+const STRIPE_COLORS = ['#DC2626', '#EA580C', '#D97706', '#16A34A', '#0891B2', '#2563EB', '#7C3AED', '#DB2777']
+
+// Pick the margin-stripe colour for a field (or none). Replaces the old
+// "Marker som alvorlig" on/off checkbox with a small swatch row.
+function TonePicker({ value, onChange }) {
+  const current = value === 'danger' ? STRIPE_COLORS[0] : (value || '')
+  const swatch = { width: 16, height: 16, borderRadius: 4, cursor: 'pointer', padding: 0, boxSizing: 'border-box' }
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.textMute }}
+      title="Farget strek i margen — for feltet som beskriver risiko eller avvik">
+      <span>Strekfarge</span>
+      <button type="button" onClick={() => onChange('')} title="Ingen strek"
+        style={{ ...swatch, background: C.surface, color: C.textFaint, fontSize: 11, lineHeight: '12px',
+          border: `1px solid ${!current ? C.text : C.border}` }}>∅</button>
+      {STRIPE_COLORS.map(c => (
+        <button key={c} type="button" onClick={() => onChange(c)} title={c}
+          style={{ ...swatch, background: c,
+            border: current === c ? `2px solid ${C.text}` : `1px solid ${C.border}` }} />
+      ))}
+    </span>
+  )
+}
+
+// The fields that make up the JSON. `flags` decides which checkboxes a row shows,
+// since a field per document, per finding and across findings mean different
+// things even though they are edited the same way.
+const ANCHOR = '__anchor__'
+
+// `anchor` names what the fields are shown around — the findings, or the lists
+// per document. It sits in the list as a row of its own: a field above it is
+// shown before, a field below it after, so the order in the dialog is the order
+// on screen. Position is stored as each field's `lead`.
+function FieldRows({ rows, onChange, flags = {}, addLabel = '+ Legg til felt', anchor }) {
+  const list = anchor
+    ? [...rows.filter(r => r.lead), ANCHOR, ...rows.filter(r => !r.lead)]
+    : rows
+  const commit = (next) => {
+    if (!anchor) { onChange(next); return }
+    const at = next.indexOf(ANCHOR)
+    onChange(next.filter(r => r !== ANCHOR).map((r, i) => ({ ...r, lead: i < at })))
+  }
+  const set = (i, patch) => commit(list.map((r, j) => j === i ? { ...r, ...patch } : r))
+  const move = (i, d) => {
+    const j = i + d
+    if (j < 0 || j >= list.length) return
+    const next = [...list]; [next[i], next[j]] = [next[j], next[i]]; commit(next)
+  }
+  const check = (checked, onToggle, text, title) => (
+    <label title={title} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.textMute, cursor: 'pointer' }}>
+      <input type="checkbox" checked={!!checked} onChange={onToggle} style={{ cursor: 'pointer' }} />
+      {text}
+    </label>
+  )
+  return (
+    <div>
+      {list.map((row, i) => row === ANCHOR ? (
+        <RowShell key={i} tight onUp={() => move(i, -1)} onDown={() => move(i, 1)}>
+          <div style={{
+            padding: '8px 12px', borderRadius: 8, border: `1px dashed ${C.border}`, background: C.bg,
+          }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: C.text }}>{anchor.label}</div>
+            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2, lineHeight: 1.5 }}>
+              Felt over denne raden vises før, felt under vises etter.
+            </div>
+          </div>
+        </RowShell>
+      ) : (
+        <RowShell key={i}
+          onRemove={() => commit(list.filter((_, j) => j !== i))}
+          onUp={() => move(i, -1)} onDown={() => move(i, 1)}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+            <input value={row.label}
+              onChange={e => {
+                const label = e.target.value
+                // The key follows the heading until it is edited by hand, then
+                // it stops moving — renaming a heading must not silently change
+                // the JSON a saved template asks for.
+                set(i, row.keyTouched ? { label } : { label, key: slugKey(label) })
+              }}
+              placeholder="Overskrift, f.eks. Kildefunn" style={{ ...inp.text, fontWeight: 600 }} />
+            <input value={row.key}
+              onChange={e => set(i, { key: e.target.value, keyTouched: true })}
+              placeholder="kildefunn" spellCheck={false}
+              style={{ ...inp.text, fontFamily: 'monospace', fontSize: 12 }} />
+          </div>
+          <input value={row.beskrivelse || ''} onChange={e => set(i, { beskrivelse: e.target.value })}
+            placeholder="Hva feltet skal inneholde — dette er det modellen får se" style={inp.text} />
+          <div style={{ display: 'flex', gap: 14, marginTop: 6, flexWrap: 'wrap' }}>
+            {flags.context && check(row.context !== false, () => set(i, { context: row.context === false }),
+              'Send til oppsummeringen',
+              'Av: feltet blir stående i analysen per dokument, men slås ikke sammen på tvers')}
+            {flags.tone && <TonePicker value={row.tone} onChange={t => set(i, { tone: t })} />}
+          </div>
+        </RowShell>
+      ))}
+      <button onClick={() => commit([...list, { key: '', label: '', beskrivelse: '' }])} style={btn.ghost}>
+        {addLabel}
+      </button>
+    </div>
+  )
+}
+
+function WizardStepNav({ step, steps, onStep }) {
+  return (
+    <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+      {steps.map((s, i) => {
+        const active = i === step
+        return (
+          <button key={s} onClick={() => onStep(i)} style={{
+            padding: '6px 12px', borderRadius: 999, cursor: 'pointer',
+            fontSize: 12, fontFamily: 'inherit', fontWeight: active ? 600 : 500,
+            border: `1px solid ${active ? C.accent : C.border}`,
+            background: active ? C.accentBg : C.surface,
+            color: active ? C.accent : C.textMute,
+          }}>{i + 1}. {s}</button>
+        )
+      })}
+    </div>
+  )
+}
+
+// Each editing block is its own titled card: a header band (title + hint on the
+// tinted ground) over a white body, so the sections read as clearly separate
+// units instead of running together down one column.
+function WizardSection({ title, hint, children }) {
+  return (
+    <div style={{
+      marginBottom: 14, borderRadius: 12, border: `1px solid ${C.border}`,
+      background: C.surface, boxShadow: '0 1px 2px rgba(15,23,42,0.04)', overflow: 'hidden',
+    }}>
+      <div style={{ padding: '10px 16px', background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 13.5, fontWeight: 700, color: C.text }}>{title}</div>
+        {hint && <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.55, marginTop: 3, maxWidth: 640 }}>{hint}</div>}
+      </div>
+      <div style={{ padding: '14px 16px' }}>{children}</div>
+    </div>
+  )
+}
+
+const WIZARD_STEPS = ['Om malen', 'Per dokument', 'Oppsummering', 'Se over']
+
+// A row that arrives with a key keeps it: the key is what a stored answer is
+// filed under, so editing the heading afterwards must not quietly rename it.
+function adoptRows(rows) {
+  return (rows || []).map(r => ({ ...r, keyTouched: !!(r.key || '').trim() }))
+}
+
+function adoptWizard(w) {
+  const next = { ...EMPTY_WIZARD, ...(w || {}) }
+  // Written before the summary had parts: the free text becomes the task and
+  // nothing is added around it, so reopening doesn't change the instruction.
+  if (w && w.agg_oppdrag == null) {
+    next.agg_oppdrag = w.agg_instruksjon || ''
+    next.agg_regler = []
+    next.agg_svarstil_lik = false
+  }
+  delete next.agg_instruksjon
+  // Rules became editable free text ({text, on}). Reopen the list from the new
+  // shape when present, otherwise seed it from the old ticked keys. `begreper`
+  // (carry concept definitions into the synthesis) is now its own flag.
+  const agg_rules = Array.isArray(w?.agg_rules)
+    ? w.agg_rules.map(r => ({ text: r.text || '', on: r.on !== false }))
+    : rulesFromKeys(next.agg_regler)
+  const agg_begreper = (w && 'agg_begreper' in w)
+    ? !!w.agg_begreper
+    : (next.agg_regler || []).includes('begreper')
+  const { agg_regler: _agg_regler, ...rest } = next  // drop legacy keys from state
+  return {
+    ...rest,
+    agg_rules,
+    agg_begreper,
+    begreper: [...(w?.begreper || [])],
+    doc_fields: adoptRows(w?.doc_fields),
+    doc_notes: adoptRows(w?.doc_notes),
+    agg_item_fields: adoptRows(w?.agg_item_fields),
+    agg_top_fields: adoptRows(w?.agg_top_fields),
+  }
+}
+
+// `initial` reopens a template the veiviser built; absent, it starts a new one.
+function TemplateWizard({ base, initial, onCancel, onDone }) {
+  const [step, setStep] = useState(0)
+  const [meta, setMeta] = useState(initial?.meta || { key: '', label: '', description: '', default_question: '' })
+  const [w, setW] = useState(() => adoptWizard(initial?.wizard))
+  const [preview, setPreview] = useState(null)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const editingKey = initial?.meta?.key || null
+
+  const set = (patch) => setW(prev => ({ ...prev, ...patch }))
+
+  const loadExample = () => {
+    setW(adoptWizard(RISK_EXAMPLE.wizard))
+    setMeta(m => ({
+      key: m.key || RISK_EXAMPLE.key,
+      label: m.label || RISK_EXAMPLE.label,
+      description: m.description || RISK_EXAMPLE.description,
+      default_question: m.default_question || RISK_EXAMPLE.default_question,
+    }))
+    setPreview(null)
+    setErr('')
+  }
+
+  // Rows carry UI-only bookkeeping; the server gets the fields and nothing else.
+  const cleanRows = (rows) => (rows || [])
+    .filter(r => (r.key || '').trim() || (r.label || '').trim())
+    .map(r => {
+      const out = { key: (r.key || '').trim(), label: (r.label || '').trim() }
+      if ((r.beskrivelse || '').trim()) out.beskrivelse = r.beskrivelse.trim()
+      if (r.lead) out.lead = true
+      if (r.context === false) out.context = false
+      if (r.tone) out.tone = r.tone
+      return out
+    })
+
+  const payload = () => ({
+    ...w,
+    agg_rules: (w.agg_rules || [])
+      .filter(r => (r.text || '').trim())
+      .map(r => ({ text: r.text.trim(), on: r.on !== false })),
+    begreper: (w.begreper || []).filter(b => (b.term || '').trim()),
+    doc_fields: cleanRows(w.doc_fields),
+    doc_notes: cleanRows(w.doc_notes),
+    agg_item_fields: cleanRows(w.agg_item_fields),
+    agg_top_fields: cleanRows(w.agg_top_fields),
+  })
+
+  const compose = async () => {
+    setBusy(true); setErr(''); setPreview(null)
+    try {
+      const res = await fetch(`${base}/admin/query-types/compose`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wizard: payload() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setPreview(data)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  const goStep = (n) => {
+    if (n === 2) {
+      setW(prev => (prev.agg_oppdrag || '').trim() ? prev : { ...prev, agg_oppdrag: DEFAULT_AGG_OPPDRAG })
+    }
+    setStep(n)
+    // Reaching the review by any route writes the text afresh from the answers.
+    if (n === 3) compose()
+  }
+
+  const goReview = () => goStep(3)
+
+  const setRule = (i, patch) => setW(prev => ({
+    ...prev, agg_rules: prev.agg_rules.map((r, j) => (j === i ? { ...r, ...patch } : r)),
+  }))
+  const addRule = () => setW(prev => ({ ...prev, agg_rules: [...(prev.agg_rules || []), { text: '', on: true }] }))
+  const removeRule = (i) => setW(prev => ({ ...prev, agg_rules: prev.agg_rules.filter((_, j) => j !== i) }))
+  const conceptNames = (w.begreper || []).map(b => (b.term || '').trim()).filter(Boolean)
+  const ruleRow = {
+    display: 'flex', alignItems: 'flex-start', gap: 8,
+    fontSize: 12.5, color: C.text, lineHeight: 1.5, cursor: 'pointer',
+  }
+
+  const save = async () => {
+    setBusy(true); setErr('')
+    try {
+      const url = editingKey
+        ? `${base}/admin/query-types/${encodeURIComponent(editingKey)}`
+        : `${base}/admin/query-types`
+      const res = await fetch(url, {
+        method: editingKey ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...meta, wizard: payload() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      await onDone()
+    } catch (e) { setErr(e.message); setBusy(false) }
+  }
+
+  const ready = meta.key.trim() && meta.label.trim()
+    && w.oppdrag.trim() && w.agg_oppdrag.trim()
+    && cleanRows(w.doc_fields).length && cleanRows(w.agg_item_fields).length
+
+  return (
+    <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>
+          {editingKey ? `Rediger «${meta.label || editingKey}»` : 'Ny analysemal — veiviser'}
+        </div>
+        {!editingKey && (
+          <button onClick={loadExample} style={btn.ghost}
+            title="Fyller inn hele veiviseren med Strategisk risiko, som du kan endre">
+            Fyll inn eksempel: Strategisk risiko
+          </button>
+        )}
+      </div>
+      <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.6, marginBottom: 14, maxWidth: 640 }}>
+        Malen kjøres i to steg: først leses hvert dokument for seg, så slås funnene
+        sammen på tvers. Du beskriver hva hvert steg skal gjøre og hvilke felt det
+        skal svare med — instruksjonene skrives ut av det, og du ser dem før du lagrer.
+      </div>
+
+      <WizardStepNav step={step} steps={WIZARD_STEPS} onStep={goStep} />
+
+      {step === 0 && (
+        <>
+          <WizardSection title="Navn og nøkkel">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 14px' }}>
+              <div>
+                <div style={wzLabel}>Navn</div>
+                <input value={meta.label} onChange={e => setMeta(m => ({ ...m, label: e.target.value }))}
+                  placeholder="f.eks. Strategisk risiko" style={inp.text} />
+              </div>
+              <div>
+                <div style={wzLabel}>Nøkkel</div>
+                <input value={meta.key} disabled={!!editingKey}
+                  onChange={e => setMeta(m => ({ ...m, key: e.target.value }))}
+                  placeholder="strategisk_risiko" spellCheck={false}
+                  style={{ ...inp.text, fontFamily: 'monospace', ...(editingKey ? { opacity: 0.6 } : {}) }} />
+                <div style={wzHint}>
+                  {editingKey
+                    ? 'Nøkkelen er malens identitet og kan ikke endres.'
+                    : 'Små bokstaver, tall og understrek. Kan ikke endres senere.'}
+                </div>
+              </div>
+            </div>
+          </WizardSection>
+
+          <WizardSection title="Beskrivelse"
+            hint="Vises under navnet når malen velges i analysevisningen.">
+            <input value={meta.description} onChange={e => setMeta(m => ({ ...m, description: e.target.value }))}
+              placeholder="Analysekjede per dokument: driver → sårbarhet → konsekvens → risiko" style={inp.text} />
+          </WizardSection>
+
+          <WizardSection title="Standardspørsmål"
+            hint="Spørsmålet analysen kjører på når feltet over søkeboksen står tomt.">
+            <input value={meta.default_question} onChange={e => setMeta(m => ({ ...m, default_question: e.target.value }))}
+              placeholder="Hvilke strategiske drivere, sårbarheter, konsekvenser og risikoer fremgår av dokumentet?"
+              style={inp.text} />
+          </WizardSection>
+        </>
+      )}
+
+      {step === 1 && (
+        <>
+          <WizardSection title="Hvem modellen er"
+            hint="Valgfritt. Én setning om rollen analysen skal ha.">
+            <WizardArea value={w.rolle} onChange={e => set({ rolle: e.target.value })}
+              placeholder="Du er en analyseassistent for strategisk risikoanalyse i Helsedirektoratet."
+              minHeight={44} />
+          </WizardSection>
+
+          <WizardSection title="Hva spørringen skal være"
+            hint="Hva modellen skal gjøre med hvert enkelt dokument — oppdraget, og gjerne rekkefølgen det skal løses i."
+          >
+            <WizardArea value={w.oppdrag} onChange={e => set({ oppdrag: e.target.value })}
+              placeholder={'Du analyserer ett kildedokument om gangen og utleder mulige strategiske risikoer.\nArbeid etter analysekjeden: kildefunn -> driver -> sårbarhet -> konsekvens -> risiko.'}
+              minHeight={80} />
+          </WizardSection>
+
+          <WizardSection title="Svarstilen"
+            hint="Hvordan svaret skal formuleres — og hva det ikke skal gjøre. Dette er stedet for «ikke foreslå tiltak» og «unngå dramatisering»."
+          >
+            <WizardArea value={w.svarstil} onChange={e => set({ svarstil: e.target.value })}
+              placeholder="Bruk et nøkternt, presist og direktoratstilpasset språk. Ikke foreslå tiltak. Unngå konsulentspråk og bastante konklusjoner."
+              minHeight={70} />
+          </WizardSection>
+
+          <WizardSection title="Sentrale begrep"
+            hint="Begrepene analysen må holde adskilt. Definer dem her, så blandes de ikke sammen i svaret — det er dette som skiller en driver fra en risiko."
+          >
+            <ConceptRows rows={w.begreper} onChange={v => set({ begreper: v })} />
+          </WizardSection>
+
+          <WizardSection title="Hva som skal returneres per dokument"
+            hint="Hvert felt blir en liste i JSON-svaret, og en overskrift i analysen — i rekkefølgen du setter dem. Det øverste feltet står for dokumentet: det er det som vises under hvert funn i «Analyse per funn» og i rapporten."
+          >
+            <FieldRows rows={w.doc_fields} onChange={v => set({ doc_fields: v })}
+              flags={{ context: true, tone: true }} />
+          </WizardSection>
+
+          <WizardSection title="Vurderinger per dokument"
+            hint="Valgfritt. Felt som svarer med én tekst i stedet for en liste — en relevansvurdering, en vurdering av kildegrunnlaget. Rekkefølgen her er rekkefølgen i resultatet. Vurderinger over «Listene per dokument» vises også under hvert funn i «Analyse per funn»."
+          >
+            <FieldRows rows={w.doc_notes} onChange={v => set({ doc_notes: v })}
+              anchor={{ label: 'Listene per dokument' }} addLabel="+ Legg til vurdering" />
+          </WizardSection>
+
+          <WizardSection title="Når dokumentet ikke er relevant"
+            hint="Innledningen til regelen som lar modellen si fra at et dokument ikke hører hjemme i analysen.">
+            <input value={w.irrelevant_regel} onChange={e => set({ irrelevant_regel: e.target.value })}
+              placeholder="Hvis dokumentet ikke er relevant for strategisk risiko" style={inp.text} />
+            <div style={wzHint}>Settes sammen til: «… , svar: {'{"relevant": false}'}».</div>
+          </WizardSection>
+        </>
+      )}
+
+      {step === 2 && (
+        <>
+          <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.6, marginBottom: 16, maxWidth: 640 }}>
+            Oppsummeringen får analysene fra alle dokumentene og slår dem sammen til
+            én liste. Instruksjonen for den skrives av svarene under, på samme måte
+            som instruksjonen per dokument.
+          </div>
+
+          <WizardSection title="Hvem modellen er"
+            hint="Valgfritt. Rollen i oppsummeringen — den kan godt være en annen enn den som leser dokumentene.">
+            <WizardArea value={w.agg_rolle} onChange={e => set({ agg_rolle: e.target.value })}
+              placeholder="Du er analytiker i risikoteamet." minHeight={44} />
+          </WizardSection>
+
+          <WizardSection title="Hva oppsummeringen skal gjøre"
+            hint="Hva modellen skal lage av analysene per dokument.">
+            <WizardArea value={w.agg_oppdrag} onChange={e => set({ agg_oppdrag: e.target.value })}
+              placeholder="Du får analyser per dokument og skal lage en syntese på tvers: en samlet oversikt over mulige strategiske risikoområder."
+              minHeight={60} />
+          </WizardSection>
+
+          <WizardSection title="Hvordan funnene slås sammen"
+            hint="Reglene står i instruksjonen slik de er skrevet her. Hak av hvilke som gjelder, endre teksten, slett dem du ikke vil ha, eller legg til egne.">
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {(w.agg_rules || []).map((r, i) => {
+                const on = r.on !== false
+                return (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="checkbox" checked={on} onChange={() => setRule(i, { on: !on })}
+                      title="Ta med denne regelen i oppsummeringen"
+                      style={{ cursor: 'pointer', flexShrink: 0 }} />
+                    <input value={r.text} onChange={e => setRule(i, { text: e.target.value })}
+                      placeholder="Skriv en regel for hvordan funnene slås sammen"
+                      style={{ ...inp.text, flex: 1, opacity: on ? 1 : 0.55 }} />
+                    <button type="button" onClick={() => removeRule(i)} title="Slett regelen"
+                      style={{ flexShrink: 0, width: 28, height: 28, borderRadius: 6, cursor: 'pointer',
+                        border: `1px solid ${C.border}`, background: C.surface, color: C.textFaint,
+                        fontSize: 13, lineHeight: 1 }}>✕</button>
+                  </div>
+                )
+              })}
+              {!(w.agg_rules || []).length && (
+                <div style={{ fontSize: 12, color: C.textFaint, fontStyle: 'italic' }}>
+                  Ingen regler ennå — oppsummeringen styres da bare av teksten over.
+                </div>
+              )}
+              <button type="button" onClick={addRule} style={{ ...btn.ghost, alignSelf: 'flex-start', marginTop: 2 }}>
+                + Legg til regel
+              </button>
+
+              <label style={{ ...ruleRow, marginTop: 6, ...(conceptNames.length ? {} : { opacity: 0.55, cursor: 'not-allowed' }) }}>
+                <input type="checkbox"
+                  checked={conceptNames.length > 0 && !!w.agg_begreper}
+                  disabled={!conceptNames.length}
+                  onChange={() => set({ agg_begreper: !w.agg_begreper })} style={{ marginTop: 3, cursor: 'inherit' }} />
+                <span>
+                  Hold de sentrale begrepene adskilt
+                  <span style={{ display: 'block', fontSize: 11, color: C.textFaint, marginTop: 1 }}>
+                    {conceptNames.length
+                      ? `Definisjonene fra «Per dokument» tas med: ${conceptNames.join(', ')}.`
+                      : 'Ingen begrep er definert under «Per dokument».'}
+                  </span>
+                </span>
+              </label>
+            </div>
+          </WizardSection>
+
+          <WizardSection title="Svarstilen"
+            hint="Hvordan oppsummeringen skal formuleres — og hva den ikke skal gjøre.">
+            <label style={{ ...ruleRow, marginBottom: 8 }}>
+              <input type="checkbox" checked={!!w.agg_svarstil_lik}
+                onChange={() => set({ agg_svarstil_lik: !w.agg_svarstil_lik })}
+                style={{ marginTop: 3, cursor: 'pointer' }} />
+              <span>Samme som per dokument</span>
+            </label>
+            {w.agg_svarstil_lik ? (
+              <div style={{
+                fontSize: 12, color: C.textMute, lineHeight: 1.6, whiteSpace: 'pre-wrap',
+                padding: '8px 12px', border: `1px dashed ${C.border}`, borderRadius: 8,
+              }}>
+                {w.svarstil.trim() || 'Ingen svarstil er skrevet under «Per dokument», så oppsummeringen får ingen heller.'}
+              </div>
+            ) : (
+              <WizardArea value={w.agg_svarstil} onChange={e => set({ agg_svarstil: e.target.value })}
+                placeholder="Bruk et nøkternt og presist språk. Ikke foreslå tiltak." minHeight={60} />
+            )}
+          </WizardSection>
+
+          <WizardSection title="Felt per funn"
+            hint="Hvert funn i oppsummeringen får et navn, en beskrivelse og kildene sine automatisk. Feltene her kommer i tillegg, og er det funnet faktisk består av."
+          >
+            <FieldRows rows={w.agg_item_fields} onChange={v => set({ agg_item_fields: v })}
+              flags={{ tone: true }} />
+          </WizardSection>
+
+          <WizardSection title="Felt på tvers av funnene"
+            hint="Valgfritt. Lister som hører til oppsummeringen som helhet i stedet for til ett funn — mønstre, kunnskapshull, spørsmål å ta videre. Rekkefølgen her er rekkefølgen i resultatet."
+          >
+            <FieldRows rows={w.agg_top_fields} onChange={v => set({ agg_top_fields: v })}
+              anchor={{ label: 'Listen med funn' }} />
+          </WizardSection>
+
+          <WizardSection title="Hva et funn heter">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+              <div>
+                <div style={wzLabel}>I opptellingen</div>
+                <input value={w.items_label} onChange={e => set({ items_label: e.target.value })}
+                  placeholder="risikoområder" style={inp.text} />
+                <div style={wzHint}>Flertall, liten forbokstav: «12 risikoområder».</div>
+              </div>
+              <div>
+                <div style={wzLabel}>Navnet på ett funn</div>
+                <input value={w.item_label} onChange={e => set({ item_label: e.target.value })}
+                  placeholder="Kort navn på risikoområde/tema" style={inp.text} />
+                <div style={wzHint}>Beskriver for modellen hva overskriften skal være.</div>
+              </div>
+              <div>
+                <div style={wzLabel}>Beskrivelsen av ett funn</div>
+                <input value={w.item_beskrivelse} onChange={e => set({ item_beskrivelse: e.target.value })}
+                  placeholder="1-3 setninger" style={inp.text} />
+              </div>
+            </div>
+          </WizardSection>
+        </>
+      )}
+
+      {step === 3 && (
+        <>
+          <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 12, maxWidth: 640 }}>
+            Dette er instruksjonene svarene dine ble til — teksten analysen faktisk
+            kjører på. Er noe feil, gå tilbake og endre svaret, så skrives den om.
+          </div>
+          {busy && !preview && <div style={{ fontSize: 13, color: C.textMute }}>Skriver instruksjonene<LoadingDots /></div>}
+          {preview && [
+            ['Instruksjon per dokument', preview.extract_system],
+            ['Instruksjon for oppsummeringen', preview.aggregate_system],
+          ].map(([label, text]) => (
+            <div key={label} style={{ marginBottom: 12 }}>
+              <div style={wzLabel}>{label}</div>
+              <AutoTextarea value={text || ''} readOnly spellCheck={false} style={{
+                width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden',
+                padding: '8px 12px', borderRadius: 8, fontSize: 12,
+                border: `1px solid ${C.border}`, fontFamily: 'monospace', lineHeight: 1.5,
+                outline: 'none', background: C.bg, color: C.textMute, cursor: 'default',
+              }} />
+            </div>
+          ))}
+          {preview && (
+            <div style={wzHint}>
+              Doble klammer i oppsummeringen er riktig — teksten kjøres gjennom en
+              mal før den sendes, og modellen ser enkle klammer.
+            </div>
+          )}
+        </>
+      )}
+
+      {err && <div style={{ fontSize: 12, color: C.danger, margin: '10px 0', lineHeight: 1.6 }}>{err}</div>}
+
+      <div style={{ display: 'flex', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+        {step > 0 && <button onClick={() => goStep(step - 1)} disabled={busy} style={btn.ghost}>← Tilbake</button>}
+        {step < 2 && <button onClick={() => goStep(step + 1)} style={btn.primary}>Neste →</button>}
+        {step === 2 && (
+          <button onClick={goReview} disabled={busy} style={btn.primary}>
+            {busy ? 'Skriver…' : 'Se over →'}
+          </button>
+        )}
+        {step === 3 && (
+          <button onClick={save} disabled={busy || !ready || !preview}
+            title={ready ? undefined : 'Fyll inn navn, nøkkel, begge instruksjonene og minst ett felt hvert sted'}
+            style={{ ...btn.primary, ...(busy || !ready || !preview ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
+            {busy ? 'Lagrer…' : (editingKey ? 'Lagre endringer' : 'Opprett analysemal')}
+          </button>
+        )}
+        <button onClick={onCancel} disabled={busy} style={btn.ghost}>Avbryt</button>
+      </div>
+    </div>
+  )
+}
+
 // Create and edit analysetyper. Built-in types can have their instructions
 // changed and reset; types made here can also be renamed and deleted.
 //
-// A new type runs on the free-analysis machinery and produces the generic
-// {label, description, sources} finding shape — the structured chain that
-// Strategisk risiko emits is drawn by dedicated components, so a new type
-// cannot invent an output nothing knows how to render.
-function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, onExamplesChanged }) {
+// Two ways to make one: the veiviser, which builds a structured template that
+// answers in fields it declares, and the simple form, which produces the generic
+// {label, description, sources} finding shape from two instructions.
+function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged }) {
   const [types, setTypes]   = useState(null)
   const [err, setErr]       = useState('')
   const [busy, setBusy]     = useState(false)
   const [editing, setEditing] = useState(null)   // key being edited
   const [draft, setDraft]   = useState({})
   const [creating, setCreating] = useState(false)
+  // null when closed; otherwise {meta, wizard} — the answers the veiviser opens on.
+  const [wizard, setWizard] = useState(null)
   const [form, setForm]     = useState({
     key: '', label: '', description: '', copy_from: '',
     extract_system: '', aggregate_system: '', default_question: '',
@@ -3496,11 +4473,6 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
   const [bankPick, setBankPick] = useState(null)   // null until a bank is chosen
   const [bankMsg, setBankMsg] = useState('')
 
-  // The suggestions offered on an empty analysis screen, per bank.
-  const [exMap, setExMap] = useState(null)
-  const [exDraft, setExDraft] = useState([])
-  const [exMsg, setExMsg] = useState('')
-
   const base = server.replace(/\/$/, '')
 
   const load = useCallback(async () => {
@@ -3524,57 +4496,29 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
       : new Set(queryTypesForIndex(name, map).map(qt => qt.key))
   }
 
-  // Only on the first load: later loads must not yank the selection back to the
-  // app's bank while the user is looking at another one.
-  const seededRef = useRef(false)
-
   const loadBankMap = useCallback(async () => {
     try {
       const res = await fetch(`${base}/admin/index-query-types`)
       const map = res.ok ? (await res.json()) : {}
       setBankMap(map)
-
-      let exs = {}
-      try {
-        const r2 = await fetch(`${base}/admin/example-questions`)
-        if (r2.ok) exs = await r2.json()
-      } catch { /* the panel still works without them */ }
-      setExMap(exs)
-      if (!seededRef.current && currentIndex) {
-        seededRef.current = true
-        setBank(currentIndex)
-        setBankPick(pickFor(currentIndex, map))
-        setExDraft(exs[currentIndex] || [])
-      }
     } catch { setBankMap({}) }
-  }, [base, currentIndex])
+  }, [base])
 
   useEffect(() => { loadBankMap() }, [loadBankMap])
+
+  // The bank being edited is the one selected at the top of the screen — follow
+  // it rather than making the user pick a bank again here.
+  useEffect(() => {
+    if (bankMap == null) return
+    setBank(currentIndex || '')
+    setBankPick(currentIndex ? pickFor(currentIndex, bankMap) : null)
+    setBankMsg('')
+  }, [currentIndex, bankMap])
 
   const selectBank = (name) => {
     setBank(name)
     setBankMsg('')
-    setExMsg('')
     setBankPick(name ? pickFor(name, bankMap) : null)
-    setExDraft(name ? (exMap?.[name] || []) : [])
-  }
-
-  const saveExamples = async () => {
-    setBusy(true); setErr(''); setExMsg('')
-    try {
-      const res = await fetch(`${base}/admin/example-questions/${encodeURIComponent(bank)}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questions: exDraft.map(q => q.trim()).filter(Boolean) }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || res.statusText)
-      setExDraft(data.questions)
-      setExMap(m => ({ ...(m || {}), [bank]: data.questions }))
-      setExMsg(data.using_defaults
-        ? 'Lagret. Banken bruker nå standardspørsmålene.'
-        : `Lagret. ${data.questions.length} ${data.questions.length === 1 ? 'spørsmål' : 'spørsmål'}.`)
-      await onExamplesChanged?.()
-    } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
   const saveBank = async () => {
@@ -3642,7 +4586,21 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
 
+  // A template the veiviser built is reopened there, in the terms it was written
+  // in. Everything else opens in the instruction editor.
   const startEdit = (row) => {
+    if (row.wizard) {
+      setCreating(false)
+      setErr('')
+      setWizard({
+        meta: {
+          key: row.key, label: row.label, description: row.description,
+          default_question: row.default_question,
+        },
+        wizard: row.wizard,
+      })
+      return
+    }
     setEditing(row.key)
     setDraft({
       label: row.label, description: row.description,
@@ -3654,6 +4612,8 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
   const field = (k) => draft[k] ?? ''
   const setField = (k, v) => setDraft(d => ({ ...d, [k]: v }))
   const editRow = types?.find(r => r.key === editing)
+  // While a template is being written, it is the only thing on the panel.
+  const composing = creating || !!wizard
 
   return (
     <div>
@@ -3665,16 +4625,39 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
         }}>«</button>
       </div>
 
-      <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 16, maxWidth: 620 }}>
-        Analysemalene bestemmer hva en aggregert analyse ser etter. Innebygde maler
-        kan få nye instruksjoner og tilbakestilles; egne maler kan i tillegg
-        omdøpes og slettes.
-      </div>
+      {!composing && (
+        <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 16, maxWidth: 620 }}>
+          Analysemalene bestemmer hva en aggregert analyse ser etter. Innebygde maler
+          kan få nye instruksjoner og tilbakestilles; egne maler kan i tillegg
+          omdøpes og slettes.
+        </div>
+      )}
 
-      {!creating && (
-        <button onClick={() => { setCreating(true); setErr('') }} style={{ ...btn.primary, marginBottom: 16 }}>
-          + Ny analysemal
-        </button>
+      {!creating && !wizard && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => { setWizard({}); setErr('') }} style={btn.primary}>
+              + Ny analysemal (veiviser)
+            </button>
+            <button onClick={() => { setCreating(true); setErr('') }} style={btn.ghost}>
+              + Enkel mal
+            </button>
+          </div>
+          <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 6, lineHeight: 1.6, maxWidth: 620 }}>
+            Veiviseren spør hva analysen skal se etter og hvilke felt den skal svare
+            med, og skriver instruksjonene av svarene — som Strategisk risiko.
+            «Enkel mal» er to instruksjoner skrevet for hånd, med én liste som svar.
+          </div>
+        </div>
+      )}
+
+      {wizard && (
+        <TemplateWizard
+          base={base}
+          initial={wizard.meta ? wizard : null}
+          onCancel={() => { setWizard(null); setErr('') }}
+          onDone={async () => { setWizard(null); await after() }}
+        />
       )}
 
       {creating && (
@@ -3780,27 +4763,22 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
         </div>
       )}
 
-      {(indexes || []).length > 0 && (
+      {!composing && (indexes || []).length > 0 && (
         <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 4 }}>
             Hvilke maler en dokumentbank tilbyr
           </div>
-          <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 12 }}>
-            Velg en dokumentbank og kryss av malene den skal tilby i analysevisningen.
-            Fjerner du alle kryssene, faller banken tilbake på standardregelen for hver mal.
+          <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: bank ? 4 : 12 }}>
+            Kryss av malene <strong style={{ color: C.text }}>{bank || 'dokumentbanken'}</strong> skal
+            tilby i analysevisningen. Fjerner du alle kryssene, faller banken tilbake på
+            standardregelen for hver mal.
           </div>
 
-          <select
-            value={bank}
-            onChange={e => selectBank(e.target.value)}
-            style={{
-              padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
-              border: `1px solid ${C.border}`, borderRadius: 8,
-              background: C.surface, color: C.text, cursor: 'pointer', maxWidth: 340,
-            }}>
-            <option value="">Velg dokumentbank…</option>
-            {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
-          </select>
+          {!bank && (
+            <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: 'italic' }}>
+              Velg en dokumentbank øverst på siden for å redigere hvilke maler den tilbyr.
+            </div>
+          )}
 
           {bank && bankPick && (
             <>
@@ -3849,63 +4827,14 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
                 <button onClick={() => selectBank(bank)} disabled={busy} style={btn.ghost}>Forkast endringer</button>
                 {bankMsg && <span style={{ fontSize: 12, color: C.success }}>{bankMsg}</span>}
               </div>
-
-              <div style={{ marginTop: 18, paddingTop: 16, borderTop: `1px solid ${C.border}` }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: C.text, marginBottom: 4 }}>
-                  Eksempelspørsmål
-                </div>
-                <div style={{ fontSize: 12.5, color: C.textMute, lineHeight: 1.6, marginBottom: 10 }}>
-                  Forslagene som tilbys på en tom analyseskjerm for denne banken.
-                  Lar du listen stå tom, brukes de generelle standardspørsmålene.
-                </div>
-
-                {exDraft.length === 0 && (
-                  <div style={{ fontSize: 12.5, color: C.textFaint, fontStyle: 'italic', marginBottom: 10 }}>
-                    Ingen egne spørsmål — banken viser standardspørsmålene.
-                  </div>
-                )}
-
-                {exDraft.map((q, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
-                    <input
-                      value={q}
-                      onChange={e => setExDraft(d => d.map((v, j) => (j === i ? e.target.value : v)))}
-                      placeholder="Skriv et spørsmål…"
-                      style={{ ...inp.text, flex: 1 }}
-                    />
-                    <button
-                      onClick={() => setExDraft(d => d.filter((_, j) => j !== i))}
-                      disabled={busy}
-                      title="Fjern spørsmålet"
-                      style={btn.danger}>🗑</button>
-                  </div>
-                ))}
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, flexWrap: 'wrap' }}>
-                  <button
-                    onClick={() => setExDraft(d => [...d, ''])}
-                    disabled={busy || exDraft.length >= 8}
-                    title={exDraft.length >= 8 ? 'Maks 8 spørsmål' : 'Legg til et spørsmål'}
-                    style={{ ...btn.ghost, ...(busy || exDraft.length >= 8 ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
-                    + Legg til spørsmål
-                  </button>
-                  <button onClick={saveExamples} disabled={busy} style={btn.primary}>
-                    {busy ? 'Lagrer…' : 'Lagre spørsmålene'}
-                  </button>
-                  <button onClick={() => { setExDraft(exMap?.[bank] || []); setExMsg('') }} disabled={busy} style={btn.ghost}>
-                    Forkast endringer
-                  </button>
-                  {exMsg && <span style={{ fontSize: 12, color: C.success }}>{exMsg}</span>}
-                </div>
-              </div>
             </>
           )}
         </div>
       )}
 
-      {err && !creating && <div style={{ fontSize: 12, color: C.danger, marginBottom: 10 }}>{err}</div>}
+      {err && !composing && <div style={{ fontSize: 12, color: C.danger, marginBottom: 10 }}>{err}</div>}
 
-      {types === null ? (
+      {!composing && (types === null ? (
         <div style={{ fontSize: 13, color: C.textMute, display: 'inline-flex', alignItems: 'center' }}>
           Henter analysemaler<LoadingDots />
         </div>
@@ -3921,6 +4850,7 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
                   <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{row.label || row.key}</span>
                   <Tag tone={row.custom ? 'success' : 'neutral'}>{row.custom ? 'EGEN' : 'INNEBYGD'}</Tag>
+                  {row.structured && <Tag tone="accent">STRUKTURERT</Tag>}
                   <span style={{ fontSize: 11, color: C.textFaint, fontFamily: 'monospace' }}>{row.key}</span>
                 </div>
                 {row.description && (
@@ -3936,7 +4866,7 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
             </div>
           ))}
         </div>
-      )}
+      ))}
 
       <Modal
         open={!!editing}
@@ -4796,7 +5726,7 @@ export default function App() {
         />
         <AdminDrawer
           open={view === 'admin'}
-          label="Administrer dokumenter"
+          label="Administrer dokumentbank"
           onOpen={() => { setSidebarOpen(false); setAnalysesOpen(false); setView('admin') }}
           onClose={leaveAdmin}>
           <AdminView
@@ -4812,6 +5742,7 @@ export default function App() {
             onPendingChange={setAdminPending}
             onBusyChange={setAdminBusy}
             registerRollback={registerRollback}
+            onExamplesChanged={refreshExamples}
             onIndexCreated={(name) => {
               setIndexes(prev => prev.includes(name) ? prev : [...prev, name].sort())
               selectedIndexRef.current = name
