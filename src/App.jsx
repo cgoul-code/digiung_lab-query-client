@@ -569,6 +569,18 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options, entries 
     return () => document.removeEventListener('mousedown', handleMouseDown)
   }, [onApply])
 
+  // The documents the draft selection keeps. Same rule as the server: values
+  // within a field are OR, fields are AND. Compared as text, since a year
+  // arrives as a number from one side and as an option from the other.
+  const matching = useMemo(() => {
+    const active = Object.entries(draft).filter(([, vals]) => vals?.length > 0)
+    const kept = (entries || []).filter(e => active.every(([key, vals]) => {
+      const v = e[key]
+      return v != null && v !== '' && vals.map(String).includes(String(v))
+    }))
+    return { kept, count: active.length }
+  }, [draft, entries])
+
   const titleMeta = useMemo(() => {
     const m = new Map()
     for (const e of (entries || [])) {
@@ -599,6 +611,44 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options, entries 
           )
         })}
       </div>
+      {(entries || []).length > 0 && (
+        <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: matching.kept.length ? C.textMute : C.danger, marginBottom: 6 }}>
+            {matching.count === 0
+              ? `Uten filtre leser analysen alle ${entries.length} dokumentene.`
+              : matching.kept.length === 0
+                ? 'Ingen dokumenter passer med disse valgene — analysen får ingenting å lese.'
+                : `Analysen leser ${matching.kept.length} av ${entries.length} dokumenter:`}
+          </div>
+          {matching.kept.length > 0 && (
+            <div style={{
+              maxHeight: 190, overflowY: 'auto',
+              border: `1px solid ${C.border}`, borderRadius: 8, background: C.surface,
+            }}>
+              {matching.kept.map((e, i) => {
+                const meta = [e.segment, e.dokumentkategori, e.publisert_av, e.publisert_arstall]
+                  .map(v => (v == null ? '' : String(v).trim())).filter(Boolean).join(' · ')
+                return (
+                  <div key={`${e.tittel || ''}-${i}`} style={{
+                    padding: '6px 10px', fontSize: 12.5, color: C.text,
+                    borderTop: i === 0 ? 'none' : `1px solid ${C.border}`,
+                  }}>
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                      title={e.tittel || ''}>
+                      {e.tittel || <span style={{ color: C.textFaint, fontStyle: 'italic' }}>uten tittel</span>}
+                    </div>
+                    {meta && (
+                      <div style={{ fontSize: 11, color: C.textFaint, marginTop: 1,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta}</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
         <button onClick={onApply} style={{
           fontSize: 13, padding: '7px 16px', borderRadius: 8,
@@ -1566,9 +1616,9 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
       background: deleting ? C.dangerBg : 'transparent',
       transition: 'opacity .15s',
     }}>
-      <td colSpan={5} style={{ padding: 0 }}>
+      <td colSpan={6} style={{ padding: 0 }}>
         <div style={{ padding: '10px 14px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 2fr 1.2fr 0.6fr auto', gap: 12, alignItems: 'center' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.7fr 1.1fr 1.1fr 0.6fr auto', gap: 12, alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 {deleting && <span aria-hidden="true" title="Slettes…" style={{ fontSize: 14, flexShrink: 0 }}>🗑</span>}
                 {unbuilt && !deleting && (
@@ -1586,7 +1636,10 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
                 {entry.url ? <Tag tone="accent">URL</Tag> : <Tag tone="neutral">FIL</Tag>}
                 <span style={{ marginLeft: 6 }}>{entrySource(entry)}</span>
               </div>
-              <div style={{ fontSize: 12, color: C.textMute }}>{entry.segment || '—'}</div>
+              <div style={{ fontSize: 12, color: C.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={entry.segment || ''}>{entry.segment || '—'}</div>
+              <div style={{ fontSize: 12, color: C.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={entry.dokumentkategori || ''}>{entry.dokumentkategori || '—'}</div>
               <div style={{ fontSize: 12, color: C.textMute }}>{entry.publisert_arstall ?? '—'}</div>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
                 {deleting && (
@@ -3489,10 +3542,11 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
 
             <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '10px 14px', background: C.bg, borderBottom: `1px solid ${C.border}`,
-                display: 'grid', gridTemplateColumns: '2fr 2fr 1.2fr 0.6fr auto', gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+                display: 'grid', gridTemplateColumns: '2fr 1.7fr 1.1fr 1.1fr 0.6fr auto', gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
                 <div>Tittel</div>
                 <div>Kilde</div>
                 <div>Segment</div>
+                <div>Kategori</div>
                 <div>År</div>
                 <div style={{ textAlign: 'right' }}>Handling</div>
               </div>
