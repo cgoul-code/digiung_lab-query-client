@@ -1331,6 +1331,41 @@ const ADMIN_FIELDS = [
   { key: 'oppsummering',      label: 'Oppsummering',  type: 'textarea' },
 ]
 
+// The heading row and each document row are grids of their own, so they only
+// line up if every column has a width that doesn't depend on its content. The
+// last one holds the buttons and is the reason: sized `auto`, a row with an
+// extra button squeezed its neighbours and the headings drifted.
+const LIST_COLUMNS = 'minmax(0, 2fr) minmax(0, 1.5fr) minmax(0, 1.15fr) minmax(0, 1.15fr) 84px 332px'
+
+// Every column heading narrows its own column. A column of free text gets a
+// search box; one with a handful of repeated values gets those values to pick
+// from; the source column has only the one distinction worth filtering on.
+const LIST_FILTERS = [
+  { key: 'tittel',            label: 'Tittel',   kind: 'text' },
+  { key: 'kilde',             label: 'Kilde',    kind: 'source' },
+  { key: 'segment',           label: 'Segment',  kind: 'value' },
+  { key: 'dokumentkategori',  label: 'Kategori', kind: 'value' },
+  { key: 'publisert_arstall', label: 'År',       kind: 'value' },
+]
+const NO_LIST_FILTER = Object.fromEntries(LIST_FILTERS.map(f => [f.key, '']))
+const SOURCE_KINDS = [{ value: 'fil', label: 'Fil' }, { value: 'url', label: 'Nettside' }]
+// Its own value, so «alt uten kategori» is something you can actually ask for.
+const BLANK_VALUE = '\u0000tom'
+
+// One column's filter against one document. Empty means the column asks nothing.
+function listFilterMatch(entry, f, want) {
+  if (!want) return true
+  if (f.kind === 'text') {
+    return String(entry?.[f.key] || '').toLowerCase().includes(want.toLowerCase())
+  }
+  if (f.kind === 'source') {
+    return (entry?.url ? 'url' : 'fil') === want
+  }
+  const v = entry?.[f.key]
+  const blank = v == null || String(v).trim() === ''
+  return want === BLANK_VALUE ? blank : (!blank && String(v).trim() === want)
+}
+
 function entryKey(entry) { return entry.url || entry.filnavn || '' }
 function entrySource(entry) {
   if (entry.url) return entry.url
@@ -1616,7 +1651,7 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
     }}>
       <td colSpan={6} style={{ padding: 0 }}>
         <div style={{ padding: '10px 14px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1.7fr 1.1fr 1.1fr 0.6fr auto', gap: 12, alignItems: 'center' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: LIST_COLUMNS, gap: 12, alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
                 {deleting && <span aria-hidden="true" title="Slettes…" style={{ fontSize: 14, flexShrink: 0 }}>🗑</span>}
                 {unbuilt && !deleting && (
@@ -1639,7 +1674,7 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
               <div style={{ fontSize: 12, color: C.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={entry.dokumentkategori || ''}>{entry.dokumentkategori || '—'}</div>
               <div style={{ fontSize: 12, color: C.textMute }}>{entry.publisert_arstall ?? '—'}</div>
-              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
                 {deleting && (
                   <span style={{ fontSize: 12, color: C.danger, fontWeight: 500, display: 'inline-flex', alignItems: 'center' }}>
                     Sletter<LoadingDots />
@@ -2635,6 +2670,18 @@ function StepSection({ step, title, description, action, children, locked, muted
   )
 }
 
+// Drawn rather than typed: the pencil emoji lies flat on most platforms, and a
+// pen that writes points up and to the right.
+function PenIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor"
+      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M11.4 1.9 14.1 4.6 5.4 13.3 2 14l.7-3.4z" />
+      <path d="M9.9 3.4 12.6 6.1" />
+    </svg>
+  )
+}
+
 function BubbleIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor"
@@ -3253,6 +3300,68 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
     setEntries(es => es.map(e => entryKey(e) === entryKey(updated) ? updated : e))
   }
 
+  // Pages per document, read off the built index. The list itself knows how
+  // many documents there are, not how much material that is.
+  const [pageStats, setPageStats] = useState(null)
+  useEffect(() => {
+    if (!indexName || !entries) return
+    let cancelled = false
+    const base = server.replace(/\/$/, '')
+    fetch(`${base}/admin/entries/stats?index_name=${encodeURIComponent(indexName)}`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(d => { if (!cancelled) setPageStats(d.pages || {}) })
+      .catch(() => { if (!cancelled) setPageStats({}) })   // an older server, or none
+    return () => { cancelled = true }
+  }, [server, indexName, entries])
+
+  // Narrowing the list is a way of reading it, not a change to it: the build,
+  // the pending count and the warnings all keep working on the whole list.
+  const [listFilter, setListFilter] = useState(NO_LIST_FILTER)
+
+  // A filter from the previous bank would hide everything in this one. Cleared
+  // during render rather than in an effect, which would show the empty list first.
+  const [filterBank, setFilterBank] = useState(indexName)
+  if (filterBank !== indexName) {
+    setFilterBank(indexName)
+    setListFilter(NO_LIST_FILTER)
+  }
+
+  const filterValues = useMemo(() => {
+    const out = {}
+    for (const f of LIST_FILTERS) {
+      if (f.kind !== 'value') continue
+      const seen = new Set()
+      let blanks = false
+      for (const e of (entries || [])) {
+        const v = e?.[f.key]
+        if (v == null || String(v).trim() === '') blanks = true
+        else seen.add(String(v).trim())
+      }
+      const values = [...seen].sort((a, b) => (
+        f.key === 'publisert_arstall' ? Number(b) - Number(a) : a.localeCompare(b, 'no')
+      ))
+      out[f.key] = { values, blanks }
+    }
+    return out
+  }, [entries])
+
+  const filterActive = LIST_FILTERS.some(f => listFilter[f.key])
+  const shownEntries = useMemo(() => (entries || []).filter(e => (
+    LIST_FILTERS.every(f => listFilterMatch(e, f, listFilter[f.key]))
+  )), [entries, listFilter])
+
+  // Counted over what the list shows, so a filtered list sums its own rows.
+  const shownPages = useMemo(() => {
+    let sum = 0
+    let unknown = 0
+    for (const e of shownEntries) {
+      const p = pageStats?.[entryKey(e)]
+      if (p > 0) sum += p
+      else unknown++
+    }
+    return { sum, unknown }
+  }, [pageStats, shownEntries])
+
   // The categories this bank already uses, offered while editing so the values
   // stay consistent without being locked to a fixed list.
   const categories = useMemo(() => [...new Set(
@@ -3540,12 +3649,54 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
 
             <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '10px 14px', background: C.bg, borderBottom: `1px solid ${C.border}`,
-                display: 'grid', gridTemplateColumns: '2fr 1.7fr 1.1fr 1.1fr 0.6fr auto', gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
-                <div>Tittel</div>
-                <div>Kilde</div>
-                <div>Segment</div>
-                <div>Kategori</div>
-                <div>År</div>
+                display: 'grid', gridTemplateColumns: LIST_COLUMNS, gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+                {LIST_FILTERS.map(f => {
+                  const on = !!listFilter[f.key]
+                  const set = e => setListFilter(prev => ({ ...prev, [f.key]: e.target.value }))
+                  // The heading is uppercase with letter-spacing; the control
+                  // inside it opts out, or the values become hard to read.
+                  const control = {
+                    width: '100%', marginTop: 5, padding: '3px 4px', boxSizing: 'border-box',
+                    fontSize: 11.5, fontFamily: 'inherit', fontWeight: 500,
+                    textTransform: 'none', letterSpacing: 0,
+                    border: `1px solid ${on ? C.accent : C.border}`,
+                    borderRadius: 6, background: C.surface,
+                    color: on ? C.accent : C.text,
+                  }
+                  return (
+                    <div key={f.key}>
+                      <div>{f.label}</div>
+                      {f.kind === 'text' ? (
+                        <input
+                          type="search"
+                          value={listFilter[f.key]}
+                          onChange={set}
+                          disabled={!entries?.length}
+                          placeholder="Søk…"
+                          aria-label={`Søk i ${f.label.toLowerCase()}`}
+                          title={`Vis bare dokumenter med dette i ${f.label.toLowerCase()}`}
+                          style={control}
+                        />
+                      ) : (
+                        <select
+                          value={listFilter[f.key]}
+                          onChange={set}
+                          disabled={!entries?.length}
+                          aria-label={`Filtrer på ${f.label.toLowerCase()}`}
+                          title={`Filtrer listen på ${f.label.toLowerCase()}`}
+                          style={{ ...control, cursor: entries?.length ? 'pointer' : 'not-allowed' }}>
+                          <option value="">Alle</option>
+                          {f.kind === 'source'
+                            ? SOURCE_KINDS.map(k => <option key={k.value} value={k.value}>{k.label}</option>)
+                            : filterValues[f.key].values.map(v => <option key={v} value={v}>{v}</option>)}
+                          {f.kind === 'value' && filterValues[f.key].blanks && (
+                            <option value={BLANK_VALUE}>(ikke satt)</option>
+                          )}
+                        </select>
+                      )}
+                    </div>
+                  )
+                })}
                 <div style={{ textAlign: 'right' }}>Handling</div>
               </div>
               {listLoading && entries != null && (
@@ -3561,10 +3712,18 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                 <ListLoading />
               ) : entries.length === 0 ? (
                 <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>Ingen oppføringer ennå.</div>
+              ) : shownEntries.length === 0 ? (
+                <div style={{ padding: '1.5rem', textAlign: 'center', fontSize: 13, color: C.textFaint }}>
+                  Ingen dokumenter passer filteret.{' '}
+                  <button onClick={() => setListFilter(NO_LIST_FILTER)} style={{
+                    background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                    color: C.accent, fontSize: 13, fontFamily: 'inherit', textDecoration: 'underline',
+                  }}>Nullstill filteret</button>
+                </div>
               ) : (
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <tbody>
-                    {entries.map((entry, i) => (
+                    {shownEntries.map((entry, i) => (
                       <AdminEntryRow key={entryKey(entry) || i}
                         entry={entry} server={server} indexName={indexName}
                         onSaved={handleSaved} onDeleted={handleDeleted} onChanged={load}
@@ -3577,13 +3736,33 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
               )}
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 10, flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, color: C.textMute }}>
+                  {filterActive
+                    ? `Viser ${shownEntries.length} av ${entries?.length ?? 0} dokumenter`
+                    : `${shownEntries.length} ${shownEntries.length === 1 ? 'dokument' : 'dokumenter'}`}
+                  {shownPages.sum > 0 && (
+                    ` · anslagsvis ${shownPages.sum.toLocaleString('nb-NO')} sider`
+                  )}
+                  {shownPages.unknown > 0 && shownEntries.length > 0 && (
+                    shownPages.sum > 0
+                      ? ` (uten sidetall: ${shownPages.unknown})`
+                      : ' · sidetall kommer når dokumentbanken er bygget'
+                  )}
+                </span>
+                {filterActive && (
+                  <button onClick={() => setListFilter(NO_LIST_FILTER)} style={btn.ghost}>Nullstill filter</button>
+                )}
+              </div>
               <button
-                onClick={() => downloadEntriesCsv(entries || [], indexName)}
-                disabled={!entries || entries.length === 0}
-                title="Last ned listen som CSV — klar for import som Teams-/Microsoft-liste"
-                style={{ ...btn.ghost, ...(entries && entries.length ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
-                ⭳ Eksporter listen til CSV
+                onClick={() => downloadEntriesCsv(shownEntries, indexName)}
+                disabled={shownEntries.length === 0}
+                title={filterActive
+                  ? `Last ned de ${shownEntries.length} dokumentene filteret viser, som CSV`
+                  : 'Last ned listen som CSV — klar for import som Teams-/Microsoft-liste'}
+                style={{ ...btn.ghost, ...(shownEntries.length ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
+                ⭳ Eksporter {filterActive ? 'utvalget' : 'listen'} til CSV
               </button>
             </div>
           </StepSection>
@@ -4562,7 +4741,7 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
 // Two ways to make one: the veiviser, which builds a structured template that
 // answers in fields it declares, and the simple form, which produces the generic
 // {label, description, sources} finding shape from two instructions.
-function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged }) {
+function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, editKey }) {
   const [types, setTypes]   = useState(null)
   const [err, setErr]       = useState('')
   const [busy, setBusy]     = useState(false)
@@ -4760,6 +4939,18 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
 
   // A built-in can be read, not changed.
   const [viewing, setViewing] = useState(null)
+
+  // Opened as a shortcut from the analysis view: open that template as soon as
+  // the list has arrived. Once per key, so closing the editor doesn't reopen it.
+  const jumpedTo = useRef('')
+  useEffect(() => {
+    if (!editKey || !types) return
+    if (jumpedTo.current === editKey) return
+    const row = types.find(r => r.key === editKey)
+    if (!row || !row.editable) return
+    jumpedTo.current = editKey
+    startEdit(row)
+  })
 
   const field = (k) => draft[k] ?? ''
   const setField = (k, v) => setDraft(d => ({ ...d, [k]: v }))
@@ -5266,7 +5457,24 @@ function ConversationSidebar({ open, onToggle, history, activeId, onSelect, onDe
 export default function App() {
   const [server, setServer]             = useState(webserverEndPoint)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // Set by the pencil on a template card: which template the analysemaler panel
+  // should open for editing. Cleared when the panel closes, or reopening it
+  // from Innstillinger would jump straight back into that editor.
+  const [editTemplateKey, setEditTemplateKey] = useState('')
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
+
+  const closeAnalyses = useCallback(() => {
+    setAnalysesOpen(false)
+    setEditTemplateKey('')
+  }, [])
+
+  // The pencil on a template card: straight into that template's editor.
+  const openTemplateEditor = useCallback((key) => {
+    setSettingsOpen(false)
+    setSidebarOpen(false)
+    setEditTemplateKey(key)
+    setAnalysesOpen(true)
+  }, [])
 
   // Set while the document list holds changes step 2 hasn't built in yet. Lives
   // here rather than in AdminView so it survives switching to search and back.
@@ -5915,13 +6123,13 @@ export default function App() {
           />
         </AdminDrawer>
 
-        <AdminDrawer open={analysesOpen} onClose={() => setAnalysesOpen(false)}>
+        <AdminDrawer open={analysesOpen} onClose={closeAnalyses}>
           <AnalysisAdmin
             server={server}
             indexes={indexes}
             currentIndex={selectedIndex}
-            onExamplesChanged={refreshExamples}
-            onBackToSearch={() => setAnalysesOpen(false)}
+            editKey={editTemplateKey}
+            onBackToSearch={closeAnalyses}
             onChanged={async () => { await refreshQueryTypes(); await refreshIndexQueryTypes() }}
           />
         </AdminDrawer>
@@ -5965,23 +6173,44 @@ export default function App() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
             {availableQueryTypes.map(qt => {
               const active = queryType === qt.key
+              // A template made here can be edited; a built-in is read-only, and
+              // the server says which is which.
+              const cfg = queryTypeDefs[qt.key]
+              const editable = !!cfg?.custom && !cfg?.builtin
               return (
-                <button key={qt.key} onClick={() => setQueryType(qt.key)} style={{
-                  padding: '12px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                  border: active ? `1.5px solid ${C.accent}` : `1px solid ${C.border}`,
-                  background: active ? C.accentBg : C.surface,
-                  fontFamily: 'inherit',
-                  position: 'relative',
-                }}>
+                // The card is a button, so the pencil has to sit beside it
+                // rather than inside it.
+                <div key={qt.key} style={{ position: 'relative', display: 'flex' }}>
+                  <button onClick={() => setQueryType(qt.key)} style={{
+                    flex: 1, minWidth: 0,
+                    padding: '12px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                    border: active ? `1.5px solid ${C.accent}` : `1px solid ${C.border}`,
+                    background: active ? C.accentBg : C.surface,
+                    fontFamily: 'inherit',
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text, marginBottom: 3, paddingRight: editable ? 48 : 16 }}>{qt.label}</div>
+                    <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.4 }}>{qt.description}</div>
+                  </button>
                   <div style={{
                     position: 'absolute', top: 12, right: 12,
                     width: 8, height: 8, borderRadius: 99,
                     background: QUERY_TYPE_TINT[qt.key] || C.accentBg,
                     border: `1px solid ${C.border}`,
                   }} />
-                  <div style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text, marginBottom: 3 }}>{qt.label}</div>
-                  <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.4 }}>{qt.description}</div>
-                </button>
+                  {editable && (
+                    <button
+                      onClick={() => openTemplateEditor(qt.key)}
+                      title={`Rediger «${qt.label}»`}
+                      aria-label={`Rediger analysemalen ${qt.label}`}
+                      style={{
+                        position: 'absolute', top: 6, right: 26,
+                        border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+                        borderRadius: 6, width: 22, height: 22, lineHeight: 0,
+                        cursor: 'pointer', padding: 0,
+                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      }}><PenIcon /></button>
+                  )}
+                </div>
               )
             })}
           </div>
