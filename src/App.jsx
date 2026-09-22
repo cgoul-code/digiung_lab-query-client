@@ -734,7 +734,24 @@ function SourceItem({ src }) {
   )
 }
 
-function QueryResultCard({ data }) {
+// Only clears the screen: the run is in the samtalelogg either way. Hidden
+// while a run streams — leaving it half-done is what «Avbryt» is for.
+function DismissResult({ onDismiss }) {
+  if (!onDismiss) return null
+  return (
+    <button
+      onClick={onDismiss}
+      title="Fjern resultatet fra visningen — analysen ligger fortsatt i samtaleloggen"
+      aria-label="Fjern resultatet fra visningen"
+      style={{
+        marginLeft: 'auto', border: `1px solid ${C.border}`, background: C.bg,
+        color: C.textMute, borderRadius: 6, width: 24, height: 24,
+        fontSize: 15, lineHeight: 1, cursor: 'pointer', padding: 0, flexShrink: 0,
+      }}>×</button>
+  )
+}
+
+function QueryResultCard({ data, onDismiss }) {
   const appliedFilters = data.filters || {}
   const sources = data.sources || []
   const isLoading = data._loading
@@ -744,6 +761,7 @@ function QueryResultCard({ data }) {
         <span style={{ ...metaLabel }}>Dokumentsøk</span>
         {data.index_name && <Tag tone="accent">{data.index_name}</Tag>}
         {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>søker…</span>}
+        {!isLoading && <DismissResult onDismiss={onDismiss} />}
       </div>
       <div style={{ fontSize: 17, fontWeight: 600, color: C.text, marginBottom: 10, lineHeight: 1.4 }}>{data.question}</div>
       {Object.keys(appliedFilters).length > 0 && (
@@ -1068,6 +1086,38 @@ function LeadNotes({ notes, values, fontSize, gap }) {
   ))
 }
 
+// One document's answer, field by field. Read-only: this is what the model
+// returned, and the table only decides how it is laid out.
+function DocAnswerTable({ rows }) {
+  if (!rows.length) return null
+  return (
+    <div style={{
+      display: 'grid', gridTemplateColumns: 'minmax(110px, 0.7fr) minmax(0, 3fr)',
+      border: `1px solid ${C.border}`, borderRadius: 8, overflow: 'hidden', marginBottom: 8,
+    }}>
+      {rows.map((r, i) => (
+        <div key={r.key} style={{ display: 'contents' }}>
+          <div style={{
+            padding: '7px 10px', background: C.bg, fontSize: 12, fontWeight: 600, color: C.text,
+            borderTop: i === 0 ? 'none' : `1px solid ${C.border}`,
+          }}>{r.label}</div>
+          <div style={{
+            padding: '7px 10px', borderTop: i === 0 ? 'none' : `1px solid ${C.border}`,
+            borderLeft: `3px solid ${r.tint || 'transparent'}`,
+          }}>
+            {r.values.map((v, j) => (
+              <div key={j} style={{
+                fontSize: 13, color: C.textMute, lineHeight: 1.5,
+                marginBottom: j === r.values.length - 1 ? 0 : 4,
+              }}>{v}</div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // One document's full answer, in the shape its template asked for.
 function StructuredDocAnalysis({ entry, spec }) {
   const [showChunks, setShowChunks] = useState(false)
@@ -1079,7 +1129,20 @@ function StructuredDocAnalysis({ entry, spec }) {
   const url = (entry.kilde_url || '').trim()
   const chunks = entry.chunks || []
   const notes = spec?.docNotes || []
-  const leadNotes = notes.filter(f => f.lead && s[f.key])
+
+  // One row per thing the template asked for, in the order it declared them:
+  // the assessments shown before the lists, then the lists, then the rest.
+  const rows = []
+  const addNote = (f) => {
+    if (s[f.key]) rows.push({ key: f.key, label: f.label, values: [String(s[f.key])] })
+  }
+  notes.filter(f => f.lead).forEach(addNote)
+  for (const f of (spec?.docFields || [])) {
+    const values = (s[f.key] || []).filter(v => String(v).trim())
+    if (values.length) rows.push({ key: f.key, label: f.label, values, tint: tintFor(f) })
+  }
+  notes.filter(f => !f.lead).forEach(addNote)
+
   return (
     <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
       <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: C.text }}>
@@ -1087,17 +1150,9 @@ function StructuredDocAnalysis({ entry, spec }) {
           ? <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, textDecoration: 'none' }}>{heading} ↗</a>
           : heading}
       </div>
-      <LeadNotes notes={leadNotes} values={s} fontSize={13} gap={8} />
-      {(spec?.docFields || []).map(f => (
-        <LabeledList key={f.key} label={f.label} values={s[f.key]} tint={tintFor(f)} />
-      ))}
+      <DocAnswerTable rows={rows} />
       {/* Nothing declared, or nothing matched it — show what came back anyway. */}
-      {!spec?.docFields?.length && <LabeledList label="Funn" values={entry.findings} />}
-      {notes.filter(f => !f.lead && s[f.key]).map(f => (
-        <div key={f.key} style={{ fontSize: 12, color: C.textFaint, marginTop: 6 }}>
-          <span style={{ fontWeight: 600 }}>{f.label}:</span> {s[f.key]}
-        </div>
-      ))}
+      {rows.length === 0 && <LabeledList label="Funn" values={entry.findings} />}
       {chunks.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <SectionToggle open={showChunks} onToggle={() => setShowChunks(p => !p)} label={`Kildehenvisninger (${chunks.length})`} />
@@ -1210,7 +1265,7 @@ function ProgressBar({ index, total, tittel, nodeMessage }) {
   )
 }
 
-function AggregateResultCard({ data }) {
+function AggregateResultCard({ data, onDismiss }) {
   const qt = QUERY_TYPES.find(q => q.key === data.query_type)
     || { key: data.query_type, label: data.query_type || 'Analyse' }
   const items = data[outputKeyFor(data.query_type)] || []
@@ -1227,6 +1282,7 @@ function AggregateResultCard({ data }) {
         {data.index_name && <Tag tone="accent">{data.index_name}</Tag>}
         <Tag tone="neutral">{qt.label}</Tag>
         {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>kjører…</span>}
+        {!isLoading && <DismissResult onDismiss={onDismiss} />}
       </div>
       <div style={{ fontSize: 17, fontWeight: 600, color: C.text, marginBottom: 12, lineHeight: 1.4 }}>{data.question}</div>
       {isLoading && (
@@ -4058,8 +4114,8 @@ const RISK_EXAMPLE = {
       { key: 'drivere', label: 'Drivere', beskrivelse: 'mulige strategiske drivere' },
       { key: 'sarbarheter', label: 'Mulige sårbarheter', beskrivelse: 'mulige sårbarheter som bør undersøkes, formulert som hypoteser/spørsmål' },
       { key: 'konsekvenser', label: 'Mulige konsekvenser', beskrivelse: 'mulige konsekvenser' },
-      { key: 'risikoer', label: 'Foreløpige risikoer', beskrivelse: 'foreløpige strategiske risikoer, formulert som usikkerhet over 3-5 år', tone: 'danger' },
-      { key: 'avklaringssporsmal', label: 'Avklaringsspørsmål', beskrivelse: 'spørsmål til videre avklaring', context: false },
+      { key: 'risikoer', label: 'Foreløpige risikoer', beskrivelse: 'foreløpige strategiske risikoer, formulert som usikkerhet over 3-5 år' },
+      { key: 'avklaringssporsmal', label: 'Avklaringsspørsmål', beskrivelse: 'spørsmål til videre avklaring' },
     ],
     agg_rolle: 'Du er analytiker i risikoteamet.',
     agg_oppdrag: 'Du får analyser per dokument og skal lage en syntese på tvers: en samlet oversikt over mulige strategiske risikoområder.',
@@ -4095,6 +4151,22 @@ function slugKey(label) {
     .slice(0, 40)
 }
 
+// Names the answer format already uses for something else; the server refuses
+// them as field names.
+const RESERVED_KEYS = new Set(['relevant', 'label', 'beskrivelse', 'sources', 'temaer'])
+
+// The JSON name for a heading: valid, not reserved, and not already taken —
+// neither in this list nor in the one it shares the answer with.
+function uniqueKey(label, taken) {
+  const base = slugKey(label)
+  const stem = base.length >= 2 ? base : 'felt'
+  let key = stem
+  for (let n = 2; taken.has(key) || RESERVED_KEYS.has(key); n++) {
+    key = `${stem.slice(0, 36)}_${n}`
+  }
+  return key
+}
+
 const wzLabel = { ...metaLabel, marginBottom: 4 }
 const wzHint = { fontSize: 11, color: C.textFaint, marginTop: 3, lineHeight: 1.55 }
 
@@ -4112,19 +4184,29 @@ function WizardArea({ value, onChange, placeholder, minHeight = 70 }) {
 }
 
 // One row of a repeatable list, with the room its own controls need.
-function RowShell({ children, onRemove, onUp, onDown, tight }) {
+// A card per concept: a term and a definition are too long for a table row, so
+// these keep a box each with the move and remove buttons in its header.
+function RowShell({ children, title, onRemove, onUp, onDown }) {
   const mini = {
-    border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+    border: `1px solid ${C.border}`, background: C.surface, color: C.textMute,
     borderRadius: 6, width: 24, height: 24, cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: 0,
   }
   return (
-    <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', marginBottom: 10 }}>
-      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingTop: tight ? 0 : 18 }}>
+    <div style={{
+      border: `1px solid ${C.border}`, borderRadius: 10, background: C.surface,
+      padding: '8px 10px 10px', marginBottom: 10,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <span style={{
+          flex: 1, minWidth: 0, fontSize: 11, fontWeight: 600, letterSpacing: '.06em',
+          textTransform: 'uppercase', color: C.textFaint,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}>{title}</span>
         <button onClick={onUp} title="Flytt opp" style={mini}>↑</button>
         <button onClick={onDown} title="Flytt ned" style={mini}>↓</button>
         {onRemove && <button onClick={onRemove} title="Fjern" style={{ ...mini, color: C.danger }}>×</button>}
       </div>
+      {children}
     </div>
   )
 }
@@ -4142,6 +4224,7 @@ function ConceptRows({ rows, onChange }) {
     <div>
       {rows.map((row, i) => (
         <RowShell key={i}
+          title={(row.term || '').trim() || `Begrep ${i + 1}`}
           onRemove={() => onChange(rows.filter((_, j) => j !== i))}
           onUp={() => move(i, -1)} onDown={() => move(i, 1)}>
           <input value={row.term} onChange={e => set(i, { term: e.target.value })}
@@ -4163,13 +4246,13 @@ const STRIPE_COLORS = ['#DC2626', '#EA580C', '#D97706', '#16A34A', '#0891B2', '#
 
 // Pick the margin-stripe colour for a field (or none). Replaces the old
 // "Marker som alvorlig" on/off checkbox with a small swatch row.
-function TonePicker({ value, onChange }) {
+function TonePicker({ value, onChange, showLabel = true }) {
   const current = value === 'danger' ? STRIPE_COLORS[0] : (value || '')
   const swatch = { width: 16, height: 16, borderRadius: 4, cursor: 'pointer', padding: 0, boxSizing: 'border-box' }
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.textMute }}
       title="Farget strek i margen — for feltet som beskriver risiko eller avvik">
-      <span>Strekfarge</span>
+      {showLabel && <span>Strekfarge</span>}
       <button type="button" onClick={() => onChange('')} title="Ingen strek"
         style={{ ...swatch, background: C.surface, color: C.textFaint, fontSize: 11, lineHeight: '12px',
           border: `1px solid ${!current ? C.text : C.border}` }}>∅</button>
@@ -4182,16 +4265,16 @@ function TonePicker({ value, onChange }) {
   )
 }
 
-// The fields that make up the JSON. `flags` decides which checkboxes a row shows,
-// since a field per document, per finding and across findings mean different
-// things even though they are edited the same way.
+// The fields that make up the JSON. A field per document, per finding and
+// across findings are edited the same way; only a finding's fields are drawn
+// with a stripe, so only they are offered a colour.
 const ANCHOR = '__anchor__'
 
 // `anchor` names what the fields are shown around — the findings, or the lists
 // per document. It sits in the list as a row of its own: a field above it is
 // shown before, a field below it after, so the order in the dialog is the order
 // on screen. Position is stored as each field's `lead`.
-function FieldRows({ rows, onChange, flags = {}, addLabel = '+ Legg til felt', anchor }) {
+function FieldRows({ rows, onChange, addLabel = '+ Legg til felt', anchor, itemName = 'Felt', tone = false, taken = [] }) {
   const list = anchor
     ? [...rows.filter(r => r.lead), ANCHOR, ...rows.filter(r => !r.lead)]
     : rows
@@ -4206,57 +4289,103 @@ function FieldRows({ rows, onChange, flags = {}, addLabel = '+ Legg til felt', a
     if (j < 0 || j >= list.length) return
     const next = [...list]; [next[i], next[j]] = [next[j], next[i]]; commit(next)
   }
-  const check = (checked, onToggle, text, title) => (
-    <label title={title} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.textMute, cursor: 'pointer' }}>
-      <input type="checkbox" checked={!!checked} onChange={onToggle} style={{ cursor: 'pointer' }} />
-      {text}
-    </label>
-  )
+  // Numbered among the fields, so the anchor row doesn't shift the count.
+  const numberOf = (i) => list.slice(0, i).filter(r => r !== ANCHOR).length + 1
+
+  const head = {
+    fontSize: 11, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase',
+    color: C.textFaint, paddingBottom: 2,
+  }
+  const mini = {
+    border: `1px solid ${C.border}`, background: C.surface, color: C.textMute,
+    borderRadius: 6, width: 24, height: 24, cursor: 'pointer', fontSize: 12, lineHeight: 1, padding: 0,
+  }
+  // The last column holds the buttons and is fixed, so no row can push the
+  // others out of line. Narrow screens scroll the table rather than crush it.
+  const columns = [
+    'minmax(140px, 1.1fr)',
+    'minmax(200px, 2.2fr)',
+    tone ? 'minmax(150px, auto)' : null,
+    '84px',
+  ].filter(Boolean).join(' ')
+
+  // Every name the answer already uses: this list's own, plus the list it
+  // shares the answer object with.
+  const keysInUse = (exceptRow) => new Set([
+    ...taken,
+    ...list.filter(r => r !== ANCHOR && r !== exceptRow).map(r => (r.key || '').trim()).filter(Boolean),
+  ])
+
   return (
     <div>
-      {list.map((row, i) => row === ANCHOR ? (
-        <RowShell key={i} tight onUp={() => move(i, -1)} onDown={() => move(i, 1)}>
-          <div style={{
-            padding: '8px 12px', borderRadius: 8, border: `1px dashed ${C.border}`, background: C.bg,
-          }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: C.text }}>{anchor.label}</div>
-            <div style={{ fontSize: 11, color: C.textFaint, marginTop: 2, lineHeight: 1.5 }}>
-              Felt over denne raden vises før, felt under vises etter.
+      <div style={{ overflowX: 'auto' }}>
+        <div style={{
+          display: 'grid', gridTemplateColumns: columns, gap: '8px 8px',
+          alignItems: 'start', minWidth: tone ? 620 : 470,
+        }}>
+          <div style={head}>Overskrift i analysen</div>
+          <div style={head}>Hva feltet skal inneholde</div>
+          {tone && <div style={head}>Strekfarge</div>}
+          <div />
+
+          {list.map((row, i) => row === ANCHOR ? (
+            // Not a field: the list these fields are shown around.
+            <div key={i} style={{ display: 'contents' }}>
+              <div style={{
+                gridColumn: '1 / -2', padding: '7px 10px', borderRadius: 8,
+                border: `1px dashed ${C.border}`, background: C.bg,
+                fontSize: 12, color: C.textMute, lineHeight: 1.5,
+              }}>
+                <span style={{ fontWeight: 600, color: C.text }}>{anchor.label}</span>
+                {' — felt over vises før, felt under vises etter'}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button onClick={() => move(i, -1)} title="Flytt opp" style={mini}>↑</button>
+                <button onClick={() => move(i, 1)} title="Flytt ned" style={mini}>↓</button>
+              </div>
             </div>
-          </div>
-        </RowShell>
-      ) : (
-        <RowShell key={i}
-          onRemove={() => commit(list.filter((_, j) => j !== i))}
-          onUp={() => move(i, -1)} onDown={() => move(i, 1)}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
-            <input value={row.label}
-              onChange={e => {
-                const label = e.target.value
-                // The key follows the heading until it is edited by hand, then
-                // it stops moving — renaming a heading must not silently change
-                // the JSON a saved template asks for.
-                set(i, row.keyTouched ? { label } : { label, key: slugKey(label) })
-              }}
-              placeholder="Overskrift, f.eks. Kildefunn" style={{ ...inp.text, fontWeight: 600 }} />
-            <input value={row.key}
-              onChange={e => set(i, { key: e.target.value, keyTouched: true })}
-              placeholder="kildefunn" spellCheck={false}
-              style={{ ...inp.text, fontFamily: 'monospace', fontSize: 12 }} />
-          </div>
-          <input value={row.beskrivelse || ''} onChange={e => set(i, { beskrivelse: e.target.value })}
-            placeholder="Hva feltet skal inneholde — dette er det modellen får se" style={inp.text} />
-          <div style={{ display: 'flex', gap: 14, marginTop: 6, flexWrap: 'wrap' }}>
-            {flags.context && check(row.context !== false, () => set(i, { context: row.context === false }),
-              'Send til oppsummeringen',
-              'Av: feltet blir stående i analysen per dokument, men slås ikke sammen på tvers')}
-            {flags.tone && <TonePicker value={row.tone} onChange={t => set(i, { tone: t })} />}
-          </div>
-        </RowShell>
-      ))}
-      <button onClick={() => commit([...list, { key: '', label: '', beskrivelse: '' }])} style={btn.ghost}>
-        {addLabel}
-      </button>
+          ) : (
+            <div key={i} style={{ display: 'contents' }}>
+              <input value={row.label}
+                onChange={e => {
+                  const label = e.target.value
+                  // A field that already has a JSON name keeps it: renaming a
+                  // heading must not rename what a saved template asks for, or
+                  // an analysis already run no longer matches its own template.
+                  set(i, row.keyTouched
+                    ? { label }
+                    : { label, key: uniqueKey(label, keysInUse(row)) })
+                }}
+                placeholder="Kildefunn"
+                title={row.key ? `Svarer under «${row.key}» i JSON-en` : undefined}
+                aria-label={`Overskrift for ${itemName.toLowerCase()} ${numberOf(i)}`}
+                style={{ ...inp.text, fontWeight: 600 }} />
+              <input value={row.beskrivelse || ''}
+                onChange={e => set(i, { beskrivelse: e.target.value })}
+                placeholder="Dette er teksten modellen får se"
+                aria-label={`Innhold i ${itemName.toLowerCase()} ${numberOf(i)}`}
+                style={inp.text} />
+              {tone && (
+                <div style={{ paddingTop: 7 }}>
+                  <TonePicker value={row.tone} onChange={v => set(i, { tone: v })} showLabel={false} />
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button onClick={() => move(i, -1)} title="Flytt opp" style={mini}>↑</button>
+                <button onClick={() => move(i, 1)} title="Flytt ned" style={mini}>↓</button>
+                <button onClick={() => commit(list.filter((_, j) => j !== i))} title="Fjern"
+                  style={{ ...mini, color: C.danger }}>×</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <button onClick={() => commit([...list, { key: '', label: '', beskrivelse: '' }])} style={btn.ghost}>
+          {addLabel}
+        </button>
+      </div>
     </div>
   )
 }
@@ -4363,14 +4492,16 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
   }
 
   // Rows carry UI-only bookkeeping; the server gets the fields and nothing else.
-  const cleanRows = (rows) => (rows || [])
+  // `tone` is only written for the lists that can show one. A template saved
+  // from here therefore sheds a colour, or an excluded field, left over from
+  // when those were settings — rather than keeping a state with no control.
+  const cleanRows = (rows, { tone = false } = {}) => (rows || [])
     .filter(r => (r.key || '').trim() || (r.label || '').trim())
     .map(r => {
       const out = { key: (r.key || '').trim(), label: (r.label || '').trim() }
       if ((r.beskrivelse || '').trim()) out.beskrivelse = r.beskrivelse.trim()
       if (r.lead) out.lead = true
-      if (r.context === false) out.context = false
-      if (r.tone) out.tone = r.tone
+      if (tone && r.tone) out.tone = r.tone
       return out
     })
 
@@ -4382,7 +4513,7 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
     begreper: (w.begreper || []).filter(b => (b.term || '').trim()),
     doc_fields: cleanRows(w.doc_fields),
     doc_notes: cleanRows(w.doc_notes),
-    agg_item_fields: cleanRows(w.agg_item_fields),
+    agg_item_fields: cleanRows(w.agg_item_fields, { tone: true }),
     agg_top_fields: cleanRows(w.agg_top_fields),
   })
 
@@ -4534,17 +4665,19 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
           </WizardSection>
 
           <WizardSection title="Hva som skal returneres per dokument"
-            hint="Hvert felt blir en liste i JSON-svaret, og en overskrift i analysen — i rekkefølgen du setter dem. Det øverste feltet står for dokumentet: det er det som vises under hvert funn i «Analyse per funn» og i rapporten."
+            hint="Hvert felt blir en liste i JSON-svaret, og en overskrift i analysen — i rekkefølgen du setter dem. Det øverste feltet står for dokumentet: det er det som vises under hvert funn i «Analyse per funn» og i rapporten. Alle feltene sendes videre til oppsummeringen."
           >
             <FieldRows rows={w.doc_fields} onChange={v => set({ doc_fields: v })}
-              flags={{ context: true, tone: true }} />
+              taken={(w.doc_notes || []).map(f => f.key)} />
           </WizardSection>
 
           <WizardSection title="Vurderinger per dokument"
             hint="Valgfritt. Felt som svarer med én tekst i stedet for en liste — en relevansvurdering, en vurdering av kildegrunnlaget. Rekkefølgen her er rekkefølgen i resultatet. Vurderinger over «Listene per dokument» vises også under hvert funn i «Analyse per funn»."
           >
             <FieldRows rows={w.doc_notes} onChange={v => set({ doc_notes: v })}
-              anchor={{ label: 'Listene per dokument' }} addLabel="+ Legg til vurdering" />
+              anchor={{ label: 'Listene per dokument' }} itemName="Vurdering"
+              taken={(w.doc_fields || []).map(f => f.key)}
+              addLabel="+ Legg til vurdering" />
           </WizardSection>
 
           <WizardSection title="Når dokumentet ikke er relevant"
@@ -4647,15 +4780,16 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
           <WizardSection title="Felt per funn"
             hint="Hvert funn i oppsummeringen får et navn, en beskrivelse og kildene sine automatisk. Feltene her kommer i tillegg, og er det funnet faktisk består av."
           >
-            <FieldRows rows={w.agg_item_fields} onChange={v => set({ agg_item_fields: v })}
-              flags={{ tone: true }} />
+            <FieldRows rows={w.agg_item_fields} onChange={v => set({ agg_item_fields: v })} tone
+              taken={(w.agg_top_fields || []).map(f => f.key)} />
           </WizardSection>
 
           <WizardSection title="Felt på tvers av funnene"
             hint="Valgfritt. Lister som hører til oppsummeringen som helhet i stedet for til ett funn — mønstre, kunnskapshull, spørsmål å ta videre. Rekkefølgen her er rekkefølgen i resultatet."
           >
             <FieldRows rows={w.agg_top_fields} onChange={v => set({ agg_top_fields: v })}
-              anchor={{ label: 'Listen med funn' }} />
+              anchor={{ label: 'Listen med funn' }}
+              taken={(w.agg_item_fields || []).map(f => f.key)} />
           </WizardSection>
 
           <WizardSection title="Hva et funn heter">
@@ -5629,6 +5763,10 @@ export default function App() {
   healthRef.current = health
   const cancelRef                       = useRef({ controller: null, jobId: null, cancelled: false })
   const [results, setResults]           = useState([])
+  // Clears one result off the screen. The run itself stays in the samtalelogg.
+  const dismissResult = useCallback((i) => {
+    setResults(prev => prev.filter((_, j) => j !== i))
+  }, [])
   const [indexes, setIndexes]           = useState([])
   const [indexQueryTypes, setIndexQueryTypes] = useState({})  // { indexName: [keys] }
   const [selectedIndex, setSelectedIndex] = useState('')
@@ -5894,10 +6032,14 @@ export default function App() {
 
     try {
       const body = {
-        question: q, query_type: queryType, n_personas: nPersonas,
+        question: q, query_type: queryType,
         chunks_per_doc: chunksPerDoc, index_name: selectedIndexRef.current,
         include_aggregate: includeAggregate,
         language,
+        // Only «Personas» has a place to put this, and it is the only template
+        // with a slider for it. Sending it everywhere made it look like a
+        // setting every analysis has.
+        ...(queryType === 'personas' ? { n_personas: nPersonas } : {}),
       }
       if (filtersToSend) body.filters = filtersToSend
 
@@ -6355,8 +6497,8 @@ export default function App() {
         )}
         {results.map((data, i) =>
           data._type === 'aggregate'
-            ? <AggregateResultCard key={i} data={data} />
-            : <QueryResultCard key={i} data={data} />
+            ? <AggregateResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
+            : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
         )}
 
       </div>
