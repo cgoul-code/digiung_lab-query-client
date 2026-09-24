@@ -1212,7 +1212,7 @@ function AutoTextarea({ value, onChange, readOnly, ...rest }) {
 // Editing lives in «Administrer analysemaler» — one editing surface for one set
 // of fields, so a saved change can't leave a second view showing stale text.
 function PromptsViewer({ queryType, defs }) {
-  const cfg = defs[queryType]
+  const cfg = defs?.[queryType]
   if (!cfg) return null
 
   return (
@@ -1399,8 +1399,8 @@ const LIST_COLUMNS = 'minmax(0, 2fr) minmax(0, 1.5fr) minmax(0, 1.15fr) minmax(0
 const LIST_FILTERS = [
   { key: 'tittel',            label: 'Tittel',   kind: 'text' },
   { key: 'kilde',             label: 'Kilde',    kind: 'source' },
-  { key: 'segment',           label: 'Segment',  kind: 'value' },
   { key: 'dokumentkategori',  label: 'Kategori', kind: 'value' },
+  { key: 'segment',           label: 'Segment',  kind: 'value' },
   { key: 'publisert_arstall', label: 'År',       kind: 'value' },
 ]
 const NO_LIST_FILTER = Object.fromEntries(LIST_FILTERS.map(f => [f.key, '']))
@@ -1725,10 +1725,11 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
                 {entry.url ? <Tag tone="accent">URL</Tag> : <Tag tone="neutral">FIL</Tag>}
                 <span style={{ marginLeft: 6 }}>{entrySource(entry)}</span>
               </div>
-              <div style={{ fontSize: 12, color: C.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-                title={entry.segment || ''}>{entry.segment || '—'}</div>
+              {/* Same order as the headings, which follow LIST_FILTERS. */}
               <div style={{ fontSize: 12, color: C.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
                 title={entry.dokumentkategori || ''}>{entry.dokumentkategori || '—'}</div>
+              <div style={{ fontSize: 12, color: C.textMute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                title={entry.segment || ''}>{entry.segment || '—'}</div>
               <div style={{ fontSize: 12, color: C.textMute }}>{entry.publisert_arstall ?? '—'}</div>
               <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap' }}>
                 {deleting && (
@@ -4934,13 +4935,13 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
 
   useEffect(() => { load() }, [load])
 
-  // What a bank offers today — either its pinned list, or what the defaults
-  // would give it.
-  const pickFor = (name, map) => {
+  // What a bank offers today - either its pinned list, or, with no list, every
+  // mal. "Every mal" has to be the catalogue this panel loaded: the module
+  // array QUERY_TYPES holds only the innebygde maler until /query-types lands,
+  // and saving off that would quietly unpin every egen mal the bank had.
+  const pickFor = (name, map, catalogue) => {
     const pinned = map?.[name]
-    return Array.isArray(pinned)
-      ? new Set(pinned)
-      : new Set(queryTypesForIndex(name, map).map(qt => qt.key))
+    return new Set(Array.isArray(pinned) ? pinned : (catalogue || []).map(r => r.key))
   }
 
   const loadBankMap = useCallback(async () => {
@@ -4956,19 +4957,20 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
   // The bank being edited is the one selected at the top of the screen — follow
   // it rather than making the user pick a bank again here.
   useEffect(() => {
-    if (bankMap == null) return
+    if (bankMap == null || types == null) return
     setBank(currentIndex || '')
-    setBankPick(currentIndex ? pickFor(currentIndex, bankMap) : null)
+    setBankPick(currentIndex ? pickFor(currentIndex, bankMap, types) : null)
     setBankMsg('')
-  }, [currentIndex, bankMap])
+  }, [currentIndex, bankMap, types])
 
   const selectBank = (name) => {
     setBank(name)
     setBankMsg('')
-    setBankPick(name ? pickFor(name, bankMap) : null)
+    setBankPick(name && types ? pickFor(name, bankMap, types) : null)
   }
 
   const saveBank = async () => {
+    if (!bank || !bankPick) return
     setBusy(true); setErr(''); setBankMsg('')
     try {
       const res = await fetch(`${base}/admin/index-query-types/${encodeURIComponent(bank)}`, {
@@ -5255,10 +5257,12 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
             <select
               value={bank}
               onChange={e => selectBank(e.target.value)}
+              disabled={types === null}
               style={{
                 padding: '7px 10px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
                 border: `1px solid ${C.border}`, borderRadius: 8,
-                background: C.surface, color: C.text, cursor: 'pointer', maxWidth: 340,
+                background: C.surface, color: C.text, maxWidth: 340,
+                cursor: types === null ? 'not-allowed' : 'pointer',
               }}>
               <option value="">Velg dokumentbank…</option>
               {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
@@ -5768,13 +5772,18 @@ export default function App() {
     setResults(prev => prev.filter((_, j) => j !== i))
   }, [])
   const [indexes, setIndexes]           = useState([])
-  const [indexQueryTypes, setIndexQueryTypes] = useState({})  // { indexName: [keys] }
+  // { indexName: [keys] }, or null while /admin/index-query-types is out. The
+  // two are not interchangeable: {} says "no bank pins anything", which offers
+  // every mal, so an unanswered call must not be able to look like one.
+  const [indexQueryTypes, setIndexQueryTypes] = useState(null)
   const [selectedIndex, setSelectedIndex] = useState('')
   const selectedIndexRef                = useRef('')
   const [options, setOptions]           = useState({})
   const [entries, setEntries]           = useState([])
   const [optionsErr, setOptionsErr]     = useState('')
-  const [queryTypeDefs, setQueryTypeDefs] = useState({})
+  // null until /query-types has answered - same reasoning as indexQueryTypes.
+  const [queryTypeDefs, setQueryTypeDefs] = useState(null)
+  const [queryTypesErr, setQueryTypesErr] = useState('')
   // Bumped when the stored questions change, so the empty state re-renders.
   const [, setExamplesVersion] = useState(0)
   const [filtersOpen, setFiltersOpen]   = useState(false)
@@ -5782,32 +5791,47 @@ export default function App() {
   const [promptsOpen, setPromptsOpen]   = useState(false)
   const [queryType, setQueryType]       = useState('free')
   // Frozen snapshot of the last-used report type, read once at mount. We can't
-  // init queryType from it directly: until the saved index loads, that report
-  // type may not be "available" yet and the reset effect below would wipe it.
-  // Instead we restore it in the /indexes handler once the index is known.
+  // init queryType from it directly: until the bank and the malkatalog are both
+  // known, that report type may not be "available" yet and the reset effect
+  // below would wipe it. It is restored once availableQueryTypes exists.
   const [savedQueryType] = useState(() => {
     try { return window.localStorage.getItem(QUERYTYPE_STORAGE_KEY) || '' } catch { return '' }
   })
 
-  // Only the analysetyper the selected dokumentbank offers. A bank with no
-  // saved list offers all of them.
+  // Only the analysetyper the selected dokumentbank offers - null while we
+  // still lack the pieces to say. Both calls must be in: queryTypesForIndex
+  // filters the QUERY_TYPES catalogue by the bank's pinned keys, so running it
+  // on a half-loaded catalogue drops every mal the bank pinned that
+  // /query-types hasn't delivered yet, leaving 'Fri analyse' standing alone.
   const availableQueryTypes = useMemo(
-    () => queryTypesForIndex(selectedIndex, indexQueryTypes),
-    [selectedIndex, indexQueryTypes]
+    () => (indexQueryTypes && queryTypeDefs
+      ? queryTypesForIndex(selectedIndex, indexQueryTypes)
+      : null),
+    // queryTypeDefs isn't read here, but registerQueryTypes refills the module
+    // array QUERY_TYPES when it lands, and that has to recompute this.
+    [selectedIndex, indexQueryTypes, queryTypeDefs]
   )
 
-  // If the active query type isn't available for the new index, fall back to
-  // the first available type (typically 'free').
+  // Restore the last-used analysetype the first time we know what the bank
+  // offers, then keep the selection inside that list.
+  const queryTypeRestored = useRef(false)
   useEffect(() => {
-    if (!availableQueryTypes.some(qt => qt.key === queryType)) {
-      setQueryType(availableQueryTypes[0]?.key || 'free')
+    if (!availableQueryTypes) return
+    const offers = (key) => availableQueryTypes.some(qt => qt.key === key)
+    if (!queryTypeRestored.current) {
+      queryTypeRestored.current = true
+      if (savedQueryType && offers(savedQueryType)) { setQueryType(savedQueryType); return }
     }
-  }, [availableQueryTypes, queryType])
+    if (!offers(queryType)) setQueryType(availableQueryTypes[0]?.key || 'free')
+  }, [availableQueryTypes, queryType, savedQueryType])
 
-  // Persist report type so the app resumes where the user left off.
+  // Persist report type so the app resumes where the user left off - but not
+  // before the list is known, or the fallback above writes 'free' over the
+  // stored choice while the bank's maler are still on their way.
   useEffect(() => {
+    if (!availableQueryTypes) return
     try { window.localStorage.setItem(QUERYTYPE_STORAGE_KEY, queryType) } catch {}
-  }, [queryType])
+  }, [availableQueryTypes, queryType])
   const [nPersonas, setNPersonas]       = useState(3)
   const [chunksPerDoc, setChunksPerDoc] = useState(8)
   const [includeAggregate, setIncludeAggregate] = useState(true)
@@ -5847,9 +5871,11 @@ export default function App() {
   const refreshQueryTypes = useCallback(() => {
     const base = server.replace(/\/$/, '')
     return fetch(`${base}/query-types`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(defs => { registerQueryTypes(defs); setQueryTypeDefs(defs) })
-      .catch(() => {})
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(defs => { registerQueryTypes(defs); setQueryTypeDefs(defs); setQueryTypesErr('') })
+      // Say so rather than carrying on: swallowing this used to leave
+      // QUERY_TYPES holding only the innebygde maler for the whole session.
+      .catch(() => setQueryTypesErr('Kunne ikke laste analysemalene fra serveren.'))
   }, [server])
 
   // Per-index analysetype overrides ({ indexName: [keys] }); needed before we
@@ -5857,18 +5883,28 @@ export default function App() {
   const refreshIndexQueryTypes = useCallback(() => {
     const base = server.replace(/\/$/, '')
     return fetch(`${base}/admin/index-query-types`)
-      .then(r => r.ok ? r.json() : Promise.reject())
-      .then(map => { const m = map && typeof map === 'object' ? map : {}; setIndexQueryTypes(m); return m })
-      .catch(() => ({}))
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(map => {
+        const m = map && typeof map === 'object' ? map : {}
+        setIndexQueryTypes(m); setQueryTypesErr('')
+        return m
+      })
+      // Deliberately not {} - that reads as "no bank pins anything" and would
+      // offer every mal as though nothing had ever been saved.
+      .catch(() => {
+        setQueryTypesErr('Kunne ikke laste hvilke analysemaler banken tilbyr.')
+        return null
+      })
   }, [server])
 
   useEffect(() => {
     const base = server.replace(/\/$/, '')
-    Promise.all([
-      fetch(`${base}/indexes`).then(r => r.ok ? r.json() : Promise.reject()),
-      refreshIndexQueryTypes(),
-    ])
-      .then(([list, qtMap]) => {
+    // The analysetype is no longer restored here: it needs the malkatalog as
+    // well, and these calls land in whatever order the network gives them.
+    // The effect above does it once both are in.
+    fetch(`${base}/indexes`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(list => {
         setIndexes(list)
         if (list.length && !selectedIndexRef.current) {
           // Restore the last-used index when it still exists, else default to first.
@@ -5877,13 +5913,10 @@ export default function App() {
           const initial = list.includes(saved) ? saved : list[0]
           selectedIndexRef.current = initial
           setSelectedIndex(initial)
-          // Restore the last-used report type if it's valid for this index.
-          if (savedQueryType && queryTypesForIndex(initial, qtMap).some(qt => qt.key === savedQueryType)) {
-            setQueryType(savedQueryType)
-          }
         }
       })
       .catch(() => {})
+    refreshIndexQueryTypes()
     refreshQueryTypes()
     refreshExamples()
   }, [server, refreshQueryTypes, refreshIndexQueryTypes, refreshExamples])
@@ -6312,6 +6345,18 @@ export default function App() {
         )}
         {/* Analysetype */}
         <div style={{ marginBottom: 16, ...lockedWhile(loading) }}>
+          {!availableQueryTypes ? (
+            <div style={{
+              padding: '12px 14px', borderRadius: 10, fontSize: 13, lineHeight: 1.5,
+              border: `1px solid ${queryTypesErr ? C.danger : C.border}`,
+              background: queryTypesErr ? C.dangerBg : C.surface,
+              color: queryTypesErr ? C.danger : C.textMute,
+            }}>
+              {queryTypesErr
+                ? `${queryTypesErr} Last siden på nytt — hvilke maler banken tilbyr kan ikke vises uten.`
+                : <>Henter analysemaler<LoadingDots /></>}
+            </div>
+          ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
             {availableQueryTypes.map(qt => {
               const active = queryType === qt.key
@@ -6356,6 +6401,7 @@ export default function App() {
               )
             })}
           </div>
+          )}
           <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={includeAggregate} onChange={e => setIncludeAggregate(e.target.checked)} style={{ marginTop: 3 }} />
             <span>
