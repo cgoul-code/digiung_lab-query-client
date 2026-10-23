@@ -716,7 +716,8 @@ function SourceItem({ src }) {
               {reportName} ↗
             </a>
           : <span style={{ color: C.text, fontWeight: 600, fontSize: 13, wordBreak: 'break-word' }}>{reportName}</span>}
-        {src.page_number != null && <Tag tone="neutral">s. {src.page_number}</Tag>}
+        {pageLocator(src.filename, src.page_number, { short: true }) &&
+          <Tag tone="neutral">{pageLocator(src.filename, src.page_number, { short: true })}</Tag>}
         <Tag tone="success">score {src.score.toFixed(2)}</Tag>
         {src.segment && <Tag tone="neutral">{src.segment}</Tag>}
         {src.publisert_av && <Tag tone="neutral">{src.publisert_av}</Tag>}
@@ -857,6 +858,14 @@ function tintFor(field) {
   return field.tone === 'danger' ? C.danger : field.tone
 }
 
+// A .docx is split into sections, not printed pages, so its locator reads
+// "Seksjon N"; PDFs keep page numbers. Returns null when there is no locator.
+function pageLocator(filename, page, { short = false } = {}) {
+  if (page == null || String(page).trim() === '') return null
+  if (/\.docx$/i.test(filename || '')) return `Seksjon ${page}`
+  return short ? `s. ${page}` : `Side ${page}`
+}
+
 function StructuredItem({ item, fields }) {
   return (
     <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 14, marginTop: 14 }}>
@@ -962,7 +971,7 @@ function FindingSource({ source, entry, spec }) {
           <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label={`Sitater (${chunks.length})`} />
           {open && chunks.map((c, i) => (
             <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-              {c.page != null && <span style={{ fontWeight: 600 }}>[Side {c.page}] </span>}«{c.excerpt}»
+              {pageLocator(entry.filename, c.page) && <span style={{ fontWeight: 600 }}>[{pageLocator(entry.filename, c.page)}] </span>}«{c.excerpt}»
               {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
             </div>
           ))}
@@ -1158,7 +1167,7 @@ function StructuredDocAnalysis({ entry, spec }) {
           <SectionToggle open={showChunks} onToggle={() => setShowChunks(p => !p)} label={`Kildehenvisninger (${chunks.length})`} />
           {showChunks && chunks.map((c, i) => (
             <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-              {c.page != null && <span style={{ fontWeight: 600 }}>[Side {c.page}] </span>}{c.excerpt}
+              {pageLocator(entry.filename, c.page) && <span style={{ fontWeight: 600 }}>[{pageLocator(entry.filename, c.page)}] </span>}{c.excerpt}
               {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
             </div>
           ))}
@@ -1354,17 +1363,23 @@ function AggregateResultCard({ data, onDismiss }) {
         )
       )}
       {!isLoading && data._job_id && (
-        <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.border}` }}>
-          <a href={`${webserverEndPoint.replace(/\/$/, '')}/aggregate/report/${data._job_id}`}
-            download
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-              fontSize: 13, color: C.accent, textDecoration: 'none',
-              padding: '7px 14px', border: `1px solid ${C.accentSoft}`, borderRadius: 8,
-              background: C.accentBg, fontWeight: 500,
-            }}>
-            ↓ Last ned rapport (.docx)
-          </a>
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.border}`, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            { fmt: '', label: '↓ Last ned rapport (.docx)' },
+            { fmt: 'pdf', label: '↓ Last ned PDF' },
+          ].map(({ fmt, label }) => (
+            <a key={fmt || 'docx'}
+              href={`${webserverEndPoint.replace(/\/$/, '')}/aggregate/report/${data._job_id}${fmt ? `?format=${fmt}` : ''}`}
+              download
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                fontSize: 13, color: C.accent, textDecoration: 'none',
+                padding: '7px 14px', border: `1px solid ${C.accentSoft}`, borderRadius: 8,
+                background: C.accentBg, fontWeight: 500,
+              }}>
+              {label}
+            </a>
+          ))}
         </div>
       )}
     </div>
@@ -3027,7 +3042,7 @@ function AddExistingReports({ server, indexName, entries, onAdded, onClose }) {
   )
 }
 
-function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onPendingChange, onBusyChange, registerRollback, onExamplesChanged }) {
+function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onPendingChange, onBusyChange, registerRollback, onExamplesChanged, onDocsChanged }) {
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
   const [adding, setAdding] = useState(false)
@@ -3842,6 +3857,9 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
                 baselineRef.current = null   // the build commits this list
                 load()
                 refreshPending()
+                // The bank changed — refresh the analyses' filter list so a
+                // just-built document shows up when the user goes back.
+                onDocsChanged?.()
               }} />
           </StepSection>
 
@@ -5842,7 +5860,21 @@ export default function App() {
   const [activeFilters, setActiveFilters]   = useState({})
   const activeFiltersRef                    = useRef({})
 
+  // Reload the filter options from document_store.json. Called on index/server
+  // change and again whenever the bank is rebuilt, so a just-added document shows
+  // up without having to switch index or reload the page. Keeps the user's active
+  // filter selection intact — only the available options are refreshed.
+  const refreshFilters = useCallback((signal) => {
+    const base = server.replace(/\/$/, '')
+    const qs   = selectedIndex ? `?index_name=${encodeURIComponent(selectedIndex)}` : ''
+    return fetch(`${base}/document-store/filter-options${qs}`, signal ? { signal } : undefined)
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(({ _entries = [], ...fields }) => { setEntries(_entries); setOptions(fields); setOptionsErr('') })
+      .catch(err => { if (err.name !== 'AbortError') setOptionsErr('Kunne ikke laste filtervalg fra serveren') })
+  }, [server, selectedIndex])
+
   useEffect(() => {
+    // Switching index or server starts from a clean slate; a refresh does not.
     draftRef.current = {}
     activeFiltersRef.current = {}
     setDraft({})
@@ -5850,15 +5882,9 @@ export default function App() {
     setOptions({})
 
     const controller = new AbortController()
-    const base = server.replace(/\/$/, '')
-    const qs   = selectedIndex ? `?index_name=${encodeURIComponent(selectedIndex)}` : ''
-    const url  = `${base}/document-store/filter-options${qs}`
-    fetch(url, { signal: controller.signal })
-      .then(r => r.ok ? r.json() : Promise.reject(r.status))
-      .then(({ _entries = [], ...fields }) => { setEntries(_entries); setOptions(fields); setOptionsErr('') })
-      .catch(err => { if (err.name !== 'AbortError') setOptionsErr('Kunne ikke laste filtervalg fra serveren') })
+    refreshFilters(controller.signal)
     return () => controller.abort()
-  }, [server, selectedIndex])
+  }, [refreshFilters])
 
   const refreshExamples = useCallback(() => {
     const base = server.replace(/\/$/, '')
@@ -6274,6 +6300,7 @@ export default function App() {
             onBusyChange={setAdminBusy}
             registerRollback={registerRollback}
             onExamplesChanged={refreshExamples}
+            onDocsChanged={() => refreshFilters()}
             onIndexCreated={(name) => {
               setIndexes(prev => prev.includes(name) ? prev : [...prev, name].sort())
               selectedIndexRef.current = name
