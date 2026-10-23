@@ -567,14 +567,17 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options, entries 
     return () => document.removeEventListener('mousedown', handleMouseDown)
   }, [onApply])
 
-  // The documents the draft selection keeps. Same rule as the server: values
-  // within a field are OR, fields are AND. Compared as text, since a year
-  // arrives as a number from one side and as an option from the other.
+  // The documents the draft selection keeps. Must match the server's rule
+  // exactly (aggregate_workflow.load_documents), or this preview disagrees with
+  // what gets analysed: values within a field are OR, fields are AND; a field may
+  // hold several ';'-joined values, and each is trimmed + lowercased and matched
+  // whole (not as a substring). Numbers (year) are compared as text.
   const matching = useMemo(() => {
+    const norm = s => String(s ?? '').trim().toLowerCase()
     const active = Object.entries(draft).filter(([, vals]) => vals?.length > 0)
     const kept = (entries || []).filter(e => active.every(([key, vals]) => {
-      const v = e[key]
-      return v != null && v !== '' && vals.map(String).includes(String(v))
+      const parts = new Set(String(e[key] ?? '').split(';').map(norm).filter(Boolean))
+      return vals.some(val => parts.has(norm(val)))
     }))
     return { kept, count: active.length }
   }, [draft, entries])
