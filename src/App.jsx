@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, createContext, useContext } from 'react'
 
 function LoadingDots() {
   const [dots, setDots] = useState(1)
@@ -756,6 +756,7 @@ function DismissResult({ onDismiss }) {
 }
 
 function QueryResultCard({ data, onDismiss }) {
+  const bankName = useBankName()
   const appliedFilters = data.filters || {}
   const sources = data.sources || []
   const isLoading = data._loading
@@ -763,7 +764,7 @@ function QueryResultCard({ data, onDismiss }) {
     <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ ...metaLabel }}>Dokumentsøk</span>
-        {data.index_name && <Tag tone="accent">{data.index_name}</Tag>}
+        {data.index_name && <Tag tone="accent">{bankName(data.index_name)}</Tag>}
         {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>søker…</span>}
         {!isLoading && <DismissResult onDismiss={onDismiss} />}
       </div>
@@ -817,7 +818,34 @@ function AggregateItem({ item, queryType }) {
   )
 }
 
+// The server the results came from, so a document link it sent as a path can be
+// opened against it.
+const ServerContext = createContext('')
+
+// Display names for the banks, {index_name: label}. The key is what every call
+// to the server uses; the label is only what a person reads.
+const BankLabelsContext = createContext({})
+
+function useBankName() {
+  const labels = useContext(BankLabelsContext)
+  return (name) => (name && labels[name]) || name
+}
+
+// Where to open a document an analysis cites: its original source when it has
+// one, otherwise the copy the analysis read — a path on the server.
+function useDocHref() {
+  const server = useContext(ServerContext).replace(/\/$/, '')
+  return (obj) => {
+    if (!obj || typeof obj !== 'object') return ''
+    const url = (obj.kilde_url || '').trim()
+    if (url) return url
+    const link = (obj.doc_link || '').trim()
+    return link.startsWith('/') ? server + link : link
+  }
+}
+
 function SourceTags({ sources }) {
+  const docHref = useDocHref()
   if (!sources?.length) return null
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginTop: 6 }}>
@@ -825,7 +853,7 @@ function SourceTags({ sources }) {
         const isObj = s && typeof s === 'object'
         const tittel = isObj ? (s.tittel || '') : String(s)
         const pages  = isObj ? (s.pages || []) : []
-        const url    = isObj ? (s.kilde_url || '').trim() : ''
+        const url    = docHref(s)
         const label  = tittel + (pages.length ? ` (s. ${pages.join(', ')})` : '')
         const tag    = <Tag tone="neutral">{label}{url ? ' ↗' : ''}</Tag>
         return url
@@ -931,6 +959,7 @@ function chunksForPages(entry, pages) {
 // the passages it was pulled from.
 function FindingSource({ source, entry, spec }) {
   const [open, setOpen] = useState(false)
+  const docHref = useDocHref()
   const isObj = source && typeof source === 'object'
   const tittel = isObj ? (source.tittel || '') : String(source)
   const pages = isObj ? (source.pages || []) : []
@@ -958,7 +987,7 @@ function FindingSource({ source, entry, spec }) {
   if (entry.publisert_av) parts.push(entry.publisert_av)
   if (entry.publisert_arstall) parts.push(String(entry.publisert_arstall))
   const heading = parts.filter(Boolean).join(' · ')
-  const url = (entry.kilde_url || '').trim()
+  const url = docHref(entry)
 
   return (
     <div style={{ marginTop: 12, paddingLeft: 12, borderLeft: `3px solid ${C.accentSoft}` }}>
@@ -990,6 +1019,7 @@ function FindingSource({ source, entry, spec }) {
 function FindingsBreakdown({ items, perDoc, spec }) {
   const [open, setOpen] = useState(false)
   const [leftoversOpen, setLeftoversOpen] = useState(false)
+  const docHref = useDocHref()
   const byTitle = new Map()
   for (const e of perDoc) {
     const k = normTitle(e.tittel || e.filename)
@@ -1042,7 +1072,7 @@ function FindingsBreakdown({ items, perDoc, spec }) {
                 if (entry.publisert_av) parts.push(entry.publisert_av)
                 if (entry.publisert_arstall) parts.push(String(entry.publisert_arstall))
                 const label = parts.filter(Boolean).join(' · ')
-                const url = (entry.kilde_url || '').trim()
+                const url = docHref(entry)
                 return (
                   <div key={i} style={{
                     fontSize: 13, color: C.textMute, lineHeight: 1.6,
@@ -1133,12 +1163,13 @@ function DocAnswerTable({ rows }) {
 // One document's full answer, in the shape its template asked for.
 function StructuredDocAnalysis({ entry, spec }) {
   const [showChunks, setShowChunks] = useState(false)
+  const docHref = useDocHref()
   const s = entry.structured || {}
   const parts = [entry.tittel || entry.filename]
   if (entry.publisert_av) parts.push(entry.publisert_av)
   if (entry.publisert_arstall) parts.push(String(entry.publisert_arstall))
   const heading = parts.filter(Boolean).join(' · ')
-  const url = (entry.kilde_url || '').trim()
+  const url = docHref(entry)
   const chunks = entry.chunks || []
   const notes = spec?.docNotes || []
 
@@ -1278,6 +1309,7 @@ function ProgressBar({ index, total, tittel, nodeMessage }) {
 }
 
 function AggregateResultCard({ data, onDismiss }) {
+  const bankName = useBankName()
   const qt = QUERY_TYPES.find(q => q.key === data.query_type)
     || { key: data.query_type, label: data.query_type || 'Analyse' }
   const items = data[outputKeyFor(data.query_type)] || []
@@ -1291,7 +1323,7 @@ function AggregateResultCard({ data, onDismiss }) {
     <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
         <span style={{ ...metaLabel }}>Aggregert analyse</span>
-        {data.index_name && <Tag tone="accent">{data.index_name}</Tag>}
+        {data.index_name && <Tag tone="accent">{bankName(data.index_name)}</Tag>}
         <Tag tone="neutral">{qt.label}</Tag>
         {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>kjører…</span>}
         {!isLoading && <DismissResult onDismiss={onDismiss} />}
@@ -3045,7 +3077,8 @@ function AddExistingReports({ server, indexName, entries, onAdded, onClose }) {
   )
 }
 
-function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onPendingChange, onBusyChange, registerRollback, onExamplesChanged, onDocsChanged }) {
+function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, onIndexCreated, onIndexDeleted, onBankRenamed, onPendingChange, onBusyChange, registerRollback, onExamplesChanged, onDocsChanged }) {
+  const bankName = useBankName()
   const [entries, setEntries] = useState(null)
   const [err, setErr] = useState('')
   const [adding, setAdding] = useState(false)
@@ -3168,6 +3201,34 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
   const [deleteName, setDeleteName] = useState('')
   const [deleteBusy, setDeleteBusy] = useState(false)
   const [deleteErr, setDeleteErr]   = useState('')
+
+  // Renaming a bank changes only the name people see; its key stays, since it
+  // names the folders and file paths the bank is stored under.
+  const [renameOpen, setRenameOpen]   = useState(false)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameBusy, setRenameBusy]   = useState(false)
+  const [renameErr, setRenameErr]     = useState('')
+
+  const renameBank = async (e) => {
+    e.preventDefault()
+    setRenameBusy(true); setRenameErr('')
+    try {
+      const base = server.replace(/\/$/, '')
+      const res = await fetch(`${base}/admin/bank-labels/${encodeURIComponent(indexName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: renameValue }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      onBankRenamed?.(indexName, data.label)
+      setRenameOpen(false)
+    } catch (err) {
+      setRenameErr(err.message)
+    } finally {
+      setRenameBusy(false)
+    }
+  }
 
   const deleteBank = async () => {
     setDeleteBusy(true); setDeleteErr('')
@@ -3506,16 +3567,23 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
             background: C.surface, color: C.text, cursor: 'pointer', maxWidth: 320,
           }}>
           {!indexName && <option value="">—</option>}
-          {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
+          {(indexes || []).map(n => <option key={n} value={n}>{bankName(n)}</option>)}
         </select>
         <span style={{ fontSize: 13, color: C.textFaint }}>
           {entries == null ? '' : `${entries.length} oppføringer`}
         </span>
+        <button
+          onClick={() => { setRenameOpen(true); setRenameValue(bankName(indexName)); setRenameErr('') }}
+          disabled={!indexName}
+          title={indexName ? 'Endre navnet dokumentbanken vises med' : 'Ingen dokumentbank valgt'}
+          style={{ ...btn.ghost, ...(indexName ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
+          Gi nytt navn
+        </button>
         <button onClick={() => { setCreatingIndex(true); setCreateErr(''); setNewIndexName('') }} style={btn.ghost}>+ Ny dokumentbank</button>
         <button
           onClick={() => { setDeleteOpen(true); setDeleteName(''); setDeleteErr('') }}
           disabled={!indexName}
-          title={indexName ? `Slett «${indexName}» permanent` : 'Ingen dokumentbank valgt'}
+          title={indexName ? `Slett «${bankName(indexName)}» permanent` : 'Ingen dokumentbank valgt'}
           style={{ ...btn.danger, ...(indexName ? {} : { opacity: 0.5, cursor: 'not-allowed' }) }}>
           Slett dokumentbank
         </button>
@@ -3523,10 +3591,47 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
       )}
 
       <Modal
+        open={renameOpen}
+        onClose={() => { if (!renameBusy) setRenameOpen(false) }}
+        title="Gi nytt navn"
+        subtitle={bankName(indexName)}
+        width={460}>
+        <form onSubmit={renameBank}>
+          <label htmlFor="rename-bank" style={{ display: 'block', fontSize: 13, color: C.textMute, marginBottom: 6 }}>
+            Navnet dokumentbanken vises med:
+          </label>
+          <input
+            id="rename-bank"
+            autoFocus
+            value={renameValue}
+            onChange={e => setRenameValue(e.target.value)}
+            disabled={renameBusy}
+            maxLength={80}
+            style={{
+              width: '100%', boxSizing: 'border-box', padding: '9px 12px', borderRadius: 8,
+              border: `1.5px solid ${C.borderHi}`, background: C.surface, color: C.text,
+              fontSize: 14, fontFamily: 'inherit', outline: 'none',
+            }}
+          />
+          <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 6, lineHeight: 1.5 }}>
+            Den tekniske nøkkelen <code>{indexName}</code> beholdes, så dokumenter, filer og tidligere
+            analyser henger fortsatt sammen. Tomt felt gir banken nøkkelen som navn igjen.
+          </div>
+          {renameErr && <div style={{ fontSize: 12, color: C.danger, marginTop: 10 }}>{renameErr}</div>}
+          <div style={{ display: 'flex', gap: 8, marginTop: 18 }}>
+            <button type="submit" disabled={renameBusy} style={btn.primary}>
+              {renameBusy ? <>Lagrer<LoadingDots /></> : 'Lagre'}
+            </button>
+            <button type="button" onClick={() => setRenameOpen(false)} disabled={renameBusy} style={btn.ghost}>Avbryt</button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
         open={seedOpen}
         onClose={() => setSeedOpen(false)}
         title="Legg til eksisterende rapporter"
-        subtitle={indexName}
+        subtitle={bankName(indexName)}
         width={640}>
         {seedOpen && (
           <AddExistingReports
@@ -3543,14 +3648,14 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
         open={deleteOpen}
         onClose={() => { if (!deleteBusy) setDeleteOpen(false) }}
         title="Slett dokumentbank"
-        subtitle={indexName}
+        subtitle={bankName(indexName)}
         width={520}>
         <div style={{
           padding: '10px 12px', borderRadius: 8, marginBottom: 14,
           background: C.dangerBg, border: `1px solid ${C.danger}`,
           fontSize: 13, color: C.text, lineHeight: 1.6,
         }}>
-          <strong>Dette kan ikke angres.</strong> Alt som hører til «{indexName}» slettes permanent:
+          <strong>Dette kan ikke angres.</strong> Alt som hører til «{bankName(indexName)}» slettes permanent:
           <ul style={{ margin: '8px 0 0', paddingLeft: 20 }}>
             <li>{entries == null ? 'alle' : entries.length} oppføringer i dokumentlisten</li>
             <li>alle opplastede filer på serveren</li>
@@ -4898,6 +5003,7 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
 // answers in fields it declares, and the simple form, which produces the generic
 // {label, description, sources} finding shape from two instructions.
 function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, editKey }) {
+  const bankName = useBankName()
   const [types, setTypes]   = useState(null)
   const [err, setErr]       = useState('')
   const [busy, setBusy]     = useState(false)
@@ -5286,7 +5392,7 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
                 cursor: types === null ? 'not-allowed' : 'pointer',
               }}>
               <option value="">Velg dokumentbank…</option>
-              {(indexes || []).map(n => <option key={n} value={n}>{n}</option>)}
+              {(indexes || []).map(n => <option key={n} value={n}>{bankName(n)}</option>)}
             </select>
           )}
 
@@ -5793,6 +5899,7 @@ export default function App() {
     setResults(prev => prev.filter((_, j) => j !== i))
   }, [])
   const [indexes, setIndexes]           = useState([])
+  const [bankLabels, setBankLabels]     = useState({})
   // { indexName: [keys] }, or null while /admin/index-query-types is out. The
   // two are not interchangeable: {} says "no bank pins anything", which offers
   // every mal, so an unanswered call must not be able to look like one.
@@ -5948,6 +6055,11 @@ export default function App() {
     refreshIndexQueryTypes()
     refreshQueryTypes()
     refreshExamples()
+    // Without labels every bank shows its key, so a failure here is cosmetic.
+    fetch(`${base}/bank-labels`)
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(map => setBankLabels(map && typeof map === 'object' ? map : {}))
+      .catch(() => {})
   }, [server, refreshQueryTypes, refreshIndexQueryTypes, refreshExamples])
 
   // Remember the selected index across sessions (mirrors theme persistence).
@@ -6201,6 +6313,7 @@ export default function App() {
     + ' (valgfritt — la stå tomt for å bruke analysetypens egen instruks)'
 
   return (
+    <BankLabelsContext.Provider value={bankLabels}>
     <div style={{
       minHeight: '100vh',
       background: C.bg,
@@ -6259,7 +6372,7 @@ export default function App() {
                     border: `1px solid ${C.border}`, borderRadius: 8,
                     background: C.surface, color: C.text, cursor: 'pointer',
                   }}>
-                  {indexes.map(name => <option key={name} value={name}>{name}</option>)}
+                  {indexes.map(name => <option key={name} value={name}>{bankLabels[name] || name}</option>)}
                 </select>
               </div>
             )}
@@ -6314,7 +6427,16 @@ export default function App() {
               // Pick up the analysetyper just pinned to the new index.
               refreshIndexQueryTypes()
             }}
+            onBankRenamed={(name, label) => {
+              setBankLabels(prev => {
+                const next = { ...prev }
+                if (label && label !== name) next[name] = label
+                else delete next[name]
+                return next
+              })
+            }}
             onIndexDeleted={(name) => {
+              setBankLabels(prev => { const next = { ...prev }; delete next[name]; return next })
               const next = indexes.filter(n => n !== name)
               setIndexes(next)
               // Fall back to whatever bank is left, or none at all.
@@ -6571,11 +6693,13 @@ export default function App() {
         {results.length === 0 && !loading && (
           <EmptyState indexName={selectedIndex} onPick={q => runQuery(q)} />
         )}
-        {results.map((data, i) =>
-          data._type === 'aggregate'
-            ? <AggregateResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
-            : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
-        )}
+        <ServerContext.Provider value={server}>
+          {results.map((data, i) =>
+            data._type === 'aggregate'
+              ? <AggregateResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
+              : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
+          )}
+        </ServerContext.Provider>
 
       </div>
         </div>
@@ -6597,5 +6721,6 @@ export default function App() {
         }}
       />
     </div>
+    </BankLabelsContext.Provider>
   )
 }
