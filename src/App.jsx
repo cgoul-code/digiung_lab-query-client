@@ -705,14 +705,17 @@ function ParamSlider({ label, min, max, step, value, onChange, format, info }) {
   )
 }
 
-function SourceItem({ src }) {
+function SourceItem({ src, id }) {
   const [open, setOpen] = useState(false)
-  // Web sources get a passage deep link; fall back to the plain source URL.
-  const url = (src.deep_link || src.kilde_url || '').trim()
+  const docHref = useDocHref()
+  // Web sources get a passage deep link; fall back to the source, then to the
+  // stored document itself.
+  const url = (src.deep_link || '').trim() || docHref(src)
   const reportName = src.tittel || src.filename || 'unknown'
   return (
-    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10, marginTop: 10 }}>
+    <div id={id} style={{ borderTop: `1px solid ${C.border}`, paddingTop: 10, marginTop: 10, scrollMarginTop: 80 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        {src.n != null && <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>[{src.n}]</span>}
         {url
           ? <a href={url} target="_blank" rel="noopener noreferrer"
                style={{ color: C.accent, textDecoration: 'underline', fontWeight: 600, fontSize: 13, wordBreak: 'break-word' }}>
@@ -721,7 +724,7 @@ function SourceItem({ src }) {
           : <span style={{ color: C.text, fontWeight: 600, fontSize: 13, wordBreak: 'break-word' }}>{reportName}</span>}
         {pageLocator(src.filename, src.page_number, { short: true }) &&
           <Tag tone="neutral">{pageLocator(src.filename, src.page_number, { short: true })}</Tag>}
-        <Tag tone="success">score {src.score.toFixed(2)}</Tag>
+        {typeof src.score === 'number' && <Tag tone="success">score {src.score.toFixed(2)}</Tag>}
         {src.segment && <Tag tone="neutral">{src.segment}</Tag>}
         {src.publisert_av && <Tag tone="neutral">{src.publisert_av}</Tag>}
       </div>
@@ -786,6 +789,161 @@ function QueryResultCard({ data, onDismiss }) {
       {!isLoading && sources.length > 0 && <>
         <div style={{ ...metaLabel, marginBottom: 8 }}>Kilder ({sources.length})</div>
         {sources.map((src, i) => <SourceItem key={i} src={src} />)}
+      </>}
+    </div>
+  )
+}
+
+// ── Skills ────────────────────────────────────────────────────────────────────
+// A skill answers in Markdown and points at its passages as [n]. Only the
+// little Markdown a model writes is drawn: headings, lists, bold, italics, code.
+
+const INLINE_MD = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[\d+(?:\s*[,–-]\s*\d+)*\])/g
+
+function MdInline({ text, onCite }) {
+  return String(text).split(INLINE_MD).map((part, i) => {
+    if (!part) return null
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={i}>{part.slice(2, -2)}</strong>
+    if (part.startsWith('`') && part.endsWith('`')) return <code key={i} style={{ fontSize: '0.92em', background: C.bg, padding: '0 4px', borderRadius: 4 }}>{part.slice(1, -1)}</code>
+    if (/^\*[^*]/.test(part) && part.endsWith('*') && part.length > 2) return <em key={i}>{part.slice(1, -1)}</em>
+    if (/^\[\d/.test(part) && onCite) {
+      const nums = part.slice(1, -1).split(/\s*[,–-]\s*/).map(Number)
+      return (
+        <sup key={i} style={{ fontSize: '0.72em', whiteSpace: 'nowrap' }}>
+          [{nums.map((n, j) => (
+            <span key={j}>{j > 0 && ','}<a href={`#cite-${n}`} onClick={e => { e.preventDefault(); onCite(n) }}
+              style={{ color: C.accent, textDecoration: 'none', fontWeight: 600 }}>{n}</a></span>
+          ))}]
+        </sup>
+      )
+    }
+    return part
+  })
+}
+
+// Bygger et tre av listepunkter ut fra innrykk, så underpunkter vises nestet.
+function buildListTree(items) {
+  const root = { children: [] }
+  const stack = [{ indent: -1, node: root }]
+  for (const it of items) {
+    while (stack.length > 1 && it.indent <= stack[stack.length - 1].indent) stack.pop()
+    const node = { kind: it.kind, text: it.text, children: [] }
+    stack[stack.length - 1].node.children.push(node)
+    stack.push({ indent: it.indent, node })
+  }
+  return root.children
+}
+
+function MdList({ nodes, onCite, depth = 0 }) {
+  // Grupper søsken av samme type (ul/ol) i hver sin liste.
+  const groups = []
+  for (const n of nodes) {
+    const last = groups[groups.length - 1]
+    if (last && last.kind === n.kind) last.nodes.push(n)
+    else groups.push({ kind: n.kind, nodes: [n] })
+  }
+  return groups.map((g, gi) => {
+    const List = g.kind
+    return (
+      <List key={gi} style={{ margin: depth ? '4px 0 0' : '0 0 10px', paddingLeft: 22, listStyleType: g.kind === 'ul' ? (depth ? 'circle' : 'disc') : undefined }}>
+        {g.nodes.map((n, j) => (
+          <li key={j} style={{ marginBottom: 4 }}>
+            <MdInline text={n.text} onCite={onCite} />
+            {n.children.length > 0 && <MdList nodes={n.children} onCite={onCite} depth={depth + 1} />}
+          </li>
+        ))}
+      </List>
+    )
+  })
+}
+
+function MarkdownText({ text, onCite }) {
+  const blocks = []
+  let list = null, para = []
+  const flushPara = () => { if (para.length) { blocks.push({ t: 'p', text: para.join(' ') }); para = [] } }
+  const flushList = () => { if (list) { blocks.push({ t: 'list', nodes: buildListTree(list) }); list = null } }
+  for (const raw of String(text || '').split('\n')) {
+    const line = raw.trim()
+    const indent = raw.replace(/\t/g, '    ').match(/^ */)[0].length
+    const h = line.match(/^(#{1,4})\s+(.*)$/)
+    const ul = line.match(/^[-*•]\s+(.*)$/)
+    const ol = line.match(/^\d+[.)]\s+(.*)$/)
+    // Tom linje avslutter avsnitt, men ikke en liste — modellen legger ofte luft mellom punktene.
+    if (!line) { flushPara(); continue }
+    if (h) { flushPara(); flushList(); blocks.push({ t: 'h', level: h[1].length, text: h[2] }); continue }
+    if (ul || ol) {
+      flushPara()
+      if (!list) list = []
+      list.push({ kind: ul ? 'ul' : 'ol', text: (ul || ol)[1], indent })
+      continue
+    }
+    // Innrykket tekst rett etter et punkt hører til det punktet.
+    if (list && indent > 0) { list[list.length - 1].text += ' ' + line; continue }
+    flushList()
+    para.push(line)
+  }
+  flushPara(); flushList()
+
+  const hSize = { 1: 18, 2: 16, 3: 15, 4: 14 }
+  return (
+    <div style={{ fontSize: 15, lineHeight: 1.7, color: C.text }}>
+      {blocks.map((b, i) => {
+        if (b.t === 'h') return (
+          <div key={i} style={{ fontSize: hSize[b.level], fontWeight: 700, margin: i ? '18px 0 6px' : '0 0 6px' }}>
+            <MdInline text={b.text} onCite={onCite} />
+          </div>
+        )
+        if (b.t === 'p') return <p key={i} style={{ margin: '0 0 10px' }}><MdInline text={b.text} onCite={onCite} /></p>
+        return <MdList key={i} nodes={b.nodes} onCite={onCite} />
+
+      })}
+    </div>
+  )
+}
+
+function SkillResultCard({ data, onDismiss }) {
+  const bankName = useBankName()
+  const sources = data.sources || []
+  const isLoading = data._loading
+  const appliedFilters = data.filters || {}
+  const anchor = (n) => `skill-${data._id}-src-${n}`
+  const cite = (n) => {
+    const el = document.getElementById(anchor(n))
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    el.animate?.([{ background: C.accentBg }, { background: 'transparent' }], { duration: 1600 })
+  }
+  return (
+    <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+        <span style={{ ...metaLabel }}>Skill</span>
+        <Tag tone="accent">{data.skill_label || data.skill}</Tag>
+        {data.index_name && <Tag tone="neutral">{bankName(data.index_name)}</Tag>}
+        {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>søker…</span>}
+        {!isLoading && <DismissResult onDismiss={onDismiss} />}
+      </div>
+      <div style={{ fontSize: 17, fontWeight: 600, color: C.text, marginBottom: 10, lineHeight: 1.4 }}>{data.question}</div>
+      {Object.keys(appliedFilters).length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 12 }}>
+          {Object.entries(appliedFilters).map(([k, v]) => (
+            <Tag key={k} tone="neutral">{FILTER_FIELDS.find(f => f.key === k)?.label ?? k}: {Array.isArray(v) ? v.join(', ') : v}</Tag>
+          ))}
+        </div>
+      )}
+      {isLoading ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 0', color: C.textMute, fontSize: 14 }}>
+          <LoadingDots /> Søker i dokumentbanken og skriver svar…
+        </div>
+      ) : data._error ? (
+        <div style={{ fontSize: 14, color: C.danger }}>{data._error === true ? 'Søket feilet.' : data._error}</div>
+      ) : (
+        <div style={{ marginBottom: sources.length ? '1.25rem' : 0 }}>
+          <MarkdownText text={data.answer} onCite={cite} />
+        </div>
+      )}
+      {!isLoading && sources.length > 0 && <>
+        <div style={{ ...metaLabel, marginBottom: 8 }}>Kilder ({sources.length})</div>
+        {sources.map((src, i) => <SourceItem key={i} src={src} id={anchor(src.n ?? i + 1)} />)}
       </>}
     </div>
   )
@@ -941,7 +1099,8 @@ async function fetchWithRetry(url, options, { attempts = 5, onWait } = {}) {
 }
 
 function normTitle(s) {
-  return (s || '').split(/\s+/).filter(Boolean).join(' ').toLowerCase()
+  // Words only, as the server matches them: the model may drop a dash or a quote.
+  return (s || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(' ')
 }
 
 // Passages from one document backing one finding. When the finding names pages,
@@ -4068,7 +4227,7 @@ function SettingsMenuRow({ title, description, onClick }) {
 
 // Everything administrative, behind one ⚙: the two settings open in place, the
 // two panels take over the screen and close this on the way out.
-function SettingsModal({ open, onClose, server, onServerChange, themeName, onThemeChange, onOpenDocs, onOpenTemplates }) {
+function SettingsModal({ open, onClose, server, onServerChange, themeName, onThemeChange, onOpenDocs, onOpenTemplates, onOpenSkills }) {
   const [pane, setPane] = useState('')   // '' is the menu itself
 
   // Each open starts at the menu — a pane left over from last time is not where
@@ -4109,6 +4268,10 @@ function SettingsModal({ open, onClose, server, onServerChange, themeName, onThe
             title="Administrer analysemaler"
             description="Lag og rediger maler, og velg hvilke den enkelte banken tilbyr."
             onClick={onOpenTemplates} />
+          <SettingsMenuRow
+            title="Administrer skills"
+            description="Prompter som svarer raskt ut fra ett søk i hele banken. Last opp som .md-filer, og slå dem på per bank."
+            onClick={onOpenSkills} />
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
             <button onClick={onClose} style={{
               padding: '8px 18px', borderRadius: 8, border: `1px solid ${C.border}`,
@@ -5002,6 +5165,232 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
 // Two ways to make one: the veiviser, which builds a structured template that
 // answers in fields it declares, and the simple form, which produces the generic
 // {label, description, sources} finding shape from two instructions.
+// A skill as the Markdown file it is passed around as: front matter for what
+// the panel shows, the prompt as the body. The server reads the same shape.
+function skillToMarkdown(s) {
+  const one = (v) => String(v ?? '').replace(/\n+/g, ' ').trim()
+  return `---\nname: ${one(s.label)}\ndescription: ${one(s.description)}\ntop_k: ${s.top_k ?? 10}\n---\n\n${s.prompt || ''}\n`
+}
+
+function downloadText(filename, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }))
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+  URL.revokeObjectURL(url)
+}
+
+const EMPTY_SKILL = { label: '', description: '', top_k: 10, prompt: '' }
+
+function SkillsAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, editKey }) {
+  const bankName = useBankName()
+  const base = server.replace(/\/$/, '')
+  const [skills, setSkills]   = useState(null)
+  const [err, setErr]         = useState('')
+  const [msg, setMsg]         = useState('')
+  const [busy, setBusy]       = useState(false)
+  // null when closed; '' for a new skill, otherwise the key being edited.
+  const [editing, setEditing] = useState(null)
+  const [draft, setDraft]     = useState(EMPTY_SKILL)
+  const [bank, setBank]       = useState(currentIndex || '')
+  const [bankPick, setBankPick] = useState(new Set())
+  const fileRef = useRef(null)
+
+  const load = useCallback(async () => {
+    setErr('')
+    try {
+      const res = await fetch(`${base}/admin/skills`)
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || res.statusText)
+      setSkills(data.skills || [])
+    } catch (e) { setErr(e.message); setSkills([]) }
+  }, [base])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => { setBank(currentIndex || '') }, [currentIndex])
+  useEffect(() => {
+    setBankPick(new Set((skills || []).filter(s => (s.banks || []).includes(bank)).map(s => s.key)))
+  }, [skills, bank])
+
+  const call = async (url, method, body) => {
+    const res = await fetch(url, {
+      method, headers: { 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || res.statusText)
+    return data
+  }
+
+  const run = async (fn, done) => {
+    setBusy(true); setErr(''); setMsg('')
+    try { await fn(); await load(); await onChanged?.(); if (done) setMsg(done) }
+    catch (e) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const saveBank = () => run(
+    () => call(`${base}/admin/index-skills/${encodeURIComponent(bank)}`, 'PUT', { skills: [...bankPick] }),
+    `Lagret. «${bankName(bank)}» tilbyr ${bankPick.size} ${bankPick.size === 1 ? 'skill' : 'skills'}.`)
+
+  const saveDraft = () => run(async () => {
+    const body = { label: draft.label, description: draft.description, top_k: draft.top_k, prompt: draft.prompt }
+    if (editing) await call(`${base}/admin/skills/${encodeURIComponent(editing)}`, 'PUT', body)
+    else await call(`${base}/admin/skills`, 'POST', { ...body, banks: bank ? [bank] : [] })
+    setEditing(null)
+  }, editing ? 'Skillen er lagret.' : (bank ? `Skillen er opprettet og slått på for «${bankName(bank)}».` : 'Skillen er opprettet.'))
+
+  const remove = (s) => {
+    if (!confirm(`Slette skillen «${s.label}»? Den forsvinner fra alle dokumentbanker.`)) return
+    run(() => call(`${base}/admin/skills/${encodeURIComponent(s.key)}`, 'DELETE'), 'Skillen er slettet.')
+  }
+
+  // Each file becomes a skill of its own, switched on for the bank in view.
+  const upload = (files) => run(async () => {
+    for (const f of files) {
+      const markdown = await f.text()
+      const label = f.name.replace(/\.(md|markdown|txt)$/i, '')
+      await call(`${base}/admin/skills`, 'POST', { markdown, banks: bank ? [bank] : [], ...(/^---/.test(markdown.trim()) || /^#\s/m.test(markdown) ? {} : { label }) })
+    }
+  }, files.length === 1 ? 'Skillen er lastet opp.' : `${files.length} skills er lastet opp.`)
+
+  const startEdit = (s) => {
+    setEditing(s.key)
+    setDraft({ label: s.label, description: s.description || '', top_k: s.top_k, prompt: s.prompt })
+    setMsg(''); setErr('')
+  }
+
+  // Opened from the pencil on a skill tile: open that skill as soon as the list
+  // has arrived. Once per opening, so closing the editor doesn't reopen it.
+  const jumpedTo = useRef('')
+  useEffect(() => {
+    if (!editKey) { jumpedTo.current = ''; return }
+    if (!skills || jumpedTo.current === editKey) return
+    const s = skills.find(r => r.key === editKey)
+    if (!s) return
+    jumpedTo.current = editKey
+    startEdit(s)
+  })
+
+  const field = { ...inp.text, marginBottom: 10 }
+  const lbl = { display: 'block', fontSize: 12, fontWeight: 600, color: C.textMute, marginBottom: 4 }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+        <div style={{ fontSize: 20, fontWeight: 600, color: C.text }}>Administrer skills</div>
+        <button onClick={onBackToSearch} title="Lukk" aria-label="Lukk" style={{
+          border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+          borderRadius: 8, width: 28, height: 28, fontSize: 17, lineHeight: 1, cursor: 'pointer',
+        }}>×</button>
+      </div>
+      <div style={{ fontSize: 13, color: C.textMute, lineHeight: 1.6, marginBottom: 18 }}>
+        En skill er en prompt som svarer på et spørsmål ut fra ett søk i hele dokumentbanken — raskere enn
+        en analysemal, som leser hvert dokument for seg. Skills lagres som Markdown-filer: navn, beskrivelse
+        og antall tekstbiter i toppen mellom <code>---</code>-linjer, og prompten under.
+      </div>
+
+      {err && <div style={{ fontSize: 13, color: C.danger, marginBottom: 12 }}>{err}</div>}
+      {msg && <div style={{ fontSize: 13, color: C.success || C.accent, marginBottom: 12 }}>{msg}</div>}
+
+      {/* Which skills the bank offers */}
+      <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Skills i dokumentbanken</div>
+          <select value={bank} onChange={e => setBank(e.target.value)} style={{
+            padding: '6px 10px', fontSize: 13, fontFamily: 'inherit', fontWeight: 600,
+            border: `1px solid ${C.border}`, borderRadius: 8, background: C.surface, color: C.text, maxWidth: 320,
+          }}>
+            <option value="">Velg dokumentbank…</option>
+            {(indexes || []).map(n => <option key={n} value={n}>{bankName(n)}</option>)}
+          </select>
+        </div>
+        {!bank ? (
+          <div style={{ fontSize: 13, color: C.textFaint }}>Velg en dokumentbank for å slå skills av og på.</div>
+        ) : skills == null ? (
+          <div style={{ fontSize: 13, color: C.textFaint }}>Henter<LoadingDots /></div>
+        ) : skills.length === 0 ? (
+          <div style={{ fontSize: 13, color: C.textFaint }}>Ingen skills ennå. Last opp en .md-fil eller lag en ny under.</div>
+        ) : (
+          <>
+            {skills.map(s => (
+              <label key={s.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 8, padding: '5px 0', cursor: 'pointer', fontSize: 13 }}>
+                <input type="checkbox" checked={bankPick.has(s.key)} style={{ marginTop: 3 }}
+                  onChange={e => setBankPick(prev => {
+                    const next = new Set(prev)
+                    e.target.checked ? next.add(s.key) : next.delete(s.key)
+                    return next
+                  })} />
+                <span><strong>{s.label}</strong>{s.description && <span style={{ color: C.textMute }}> — {s.description}</span>}</span>
+              </label>
+            ))}
+            <button onClick={saveBank} disabled={busy} style={{ ...btn.primary, marginTop: 10 }}>Lagre for denne banken</button>
+          </>
+        )}
+      </div>
+
+      {/* The skills themselves */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <button onClick={() => { setEditing(''); setDraft(EMPTY_SKILL); setMsg(''); setErr('') }} disabled={busy} style={btn.ghost}>+ Ny skill</button>
+        <button onClick={() => fileRef.current?.click()} disabled={busy} style={btn.ghost}>↑ Last opp .md</button>
+        <input ref={fileRef} type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" multiple hidden
+          onChange={e => { const files = [...(e.target.files || [])]; e.target.value = ''; if (files.length) upload(files) }} />
+      </div>
+
+      {editing !== null && (
+        <div style={{ ...card, padding: '1rem 1.25rem', marginBottom: 16 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 10 }}>
+            {editing ? `Rediger «${draft.label || editing}»` : 'Ny skill'}
+          </div>
+          <label style={lbl}>Navn</label>
+          <input value={draft.label} onChange={e => setDraft(d => ({ ...d, label: e.target.value }))} style={field} placeholder="f.eks. Klinisk ammeveiledning" />
+          <label style={lbl}>Beskrivelse (vises på ruten i søket)</label>
+          <input value={draft.description} onChange={e => setDraft(d => ({ ...d, description: e.target.value }))} style={field} />
+          <label style={lbl}>Antall tekstbiter fra banken (1–30)</label>
+          <input type="number" min={1} max={30} value={draft.top_k}
+            onChange={e => setDraft(d => ({ ...d, top_k: e.target.value }))} style={{ ...field, width: 100 }} />
+          <label style={lbl}>Prompt</label>
+          <AutoTextarea value={draft.prompt} onChange={e => setDraft(d => ({ ...d, prompt: e.target.value }))}
+            spellCheck={false} style={{
+              width: '100%', boxSizing: 'border-box', resize: 'none', overflow: 'hidden', minHeight: 220,
+              padding: '8px 12px', borderRadius: 8, fontSize: 12.5, lineHeight: 1.6, fontFamily: 'inherit',
+              background: C.surface, color: C.text, border: `1px solid ${C.border}`, outline: 'none',
+            }} />
+          <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 6, lineHeight: 1.5 }}>
+            Serveren legger selv til at svaret skal bygge på utdragene fra banken, vise til dem som [1], [2] …,
+            og si fra når de ikke er nok. Det trenger ikke stå i prompten.
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+            <button onClick={saveDraft} disabled={busy} style={btn.primary}>{busy ? <>Lagrer<LoadingDots /></> : 'Lagre'}</button>
+            <button onClick={() => setEditing(null)} disabled={busy} style={btn.ghost}>Avbryt</button>
+          </div>
+        </div>
+      )}
+
+      {(skills || []).map(s => (
+        <div key={s.key} style={{ ...card, padding: '0.85rem 1.1rem', marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{s.label}</div>
+              {s.description && <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 2 }}>{s.description}</div>}
+              <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 4 }}>
+                {s.top_k} tekstbiter · {(s.banks || []).length
+                  ? `på i ${(s.banks || []).map(bankName).join(', ')}`
+                  : 'ikke slått på i noen bank'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => startEdit(s)} disabled={busy} style={btn.ghost}>Rediger</button>
+              <button onClick={() => downloadText(`${s.key}.md`, skillToMarkdown(s))} style={btn.ghost} title="Last ned som Markdown-fil">↓ .md</button>
+              <button onClick={() => remove(s)} disabled={busy} style={btn.danger}>Slett</button>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, editKey }) {
   const bankName = useBankName()
   const [types, setTypes]   = useState(null)
@@ -5726,6 +6115,7 @@ export default function App() {
   // should open for editing. Cleared when the panel closes, or reopening it
   // from Innstillinger would jump straight back into that editor.
   const [editTemplateKey, setEditTemplateKey] = useState('')
+  const [editSkillKey, setEditSkillKey] = useState('')
   const closeSettings = useCallback(() => setSettingsOpen(false), [])
 
   const closeAnalyses = useCallback(() => {
@@ -5737,9 +6127,23 @@ export default function App() {
   const openTemplateEditor = useCallback((key) => {
     setSettingsOpen(false)
     setSidebarOpen(false)
+    setSkillsOpen(false); setEditSkillKey('')
     setEditTemplateKey(key)
     setAnalysesOpen(true)
   }, [])
+
+  // The pencil on a skill tile: straight into that skill's editor.
+  const closeSkills = useCallback(() => {
+    setSkillsOpen(false)
+    setEditSkillKey('')
+  }, [])
+  const openSkillEditor = useCallback((key) => {
+    setSettingsOpen(false)
+    setSidebarOpen(false)
+    closeAnalyses()
+    setEditSkillKey(key)
+    setSkillsOpen(true)
+  }, [closeAnalyses])
 
   // Set while the document list holds changes step 2 hasn't built in yet. Lives
   // here rather than in AdminView so it survives switching to search and back.
@@ -5751,6 +6155,7 @@ export default function App() {
   // guards and rollback stay untouched; they overlay the same area, so opening
   // one closes the other.
   const [analysesOpen, setAnalysesOpen] = useState(false)
+  const [skillsOpen, setSkillsOpen]     = useState(false)
   // AdminView hands us its undo function so the confirm below can discard the
   // session's changes before the panel goes away.
   const adminRollbackRef = useRef(null)
@@ -5880,6 +6285,7 @@ export default function App() {
     setActiveConvId(entry.id)
     setQuestion(entry.question || '')
     if (entry.queryType) setQueryType(entry.queryType)
+    setActiveSkill(entry.skill || '')
     setStatus('')
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
@@ -5939,6 +6345,24 @@ export default function App() {
     // array QUERY_TYPES when it lands, and that has to recompute this.
     [selectedIndex, indexQueryTypes, queryTypeDefs]
   )
+
+  // The skills the selected bank offers, and the one picked instead of an
+  // analysemal ('' when an analysemal runs).
+  const [bankSkills, setBankSkills] = useState([])
+  const [activeSkill, setActiveSkill] = useState('')
+  const refreshBankSkills = useCallback(async () => {
+    if (!selectedIndex) { setBankSkills([]); return }
+    try {
+      const res = await fetch(`${server.replace(/\/$/, '')}/skills?index_name=${encodeURIComponent(selectedIndex)}`)
+      setBankSkills(res.ok ? await res.json() : [])
+    } catch { setBankSkills([]) }
+  }, [server, selectedIndex])
+  useEffect(() => { refreshBankSkills() }, [refreshBankSkills])
+  // A skill switched off for this bank — or a bank without it — falls back to
+  // the analysemaler.
+  useEffect(() => {
+    if (activeSkill && !bankSkills.some(s => s.key === activeSkill)) setActiveSkill('')
+  }, [bankSkills, activeSkill])
 
   // Restore the last-used analysetype the first time we know what the bank
   // offers, then keep the selection inside that list.
@@ -6190,6 +6614,7 @@ export default function App() {
       return
     }
     if (overrideQuestion) setQuestion(overrideQuestion)
+    if (activeSkill) return runSkill(q)
     setLoading(true)
     setStatus('Analyserer dokumenter — dette tar 1–3 min…')
     setStatusErr(false)
@@ -6309,8 +6734,66 @@ export default function App() {
     }
   }
 
-  const placeholder = (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
-    + ' (valgfritt — la stå tomt for å bruke analysetypens egen instruks)'
+  // One search across the bank and one answer — no job to poll.
+  const runSkill = async (q) => {
+    const skill = bankSkills.find(s => s.key === activeSkill)
+    if (!q) {
+      setStatusErr(true)
+      setStatus('Skriv et spørsmål — en skill svarer på spørsmålet ditt.')
+      return
+    }
+    setLoading(true)
+    setStatusErr(false)
+    setStatus(`Søker med «${skill?.label || activeSkill}»…`)
+    const convId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    const controller = new AbortController()
+    cancelRef.current = { controller, jobId: null, cancelled: false }
+    const filters = activeFiltersRef.current
+    const placeholderId = Date.now()
+    const index = selectedIndexRef.current
+    const head = {
+      _type: 'skill', _id: placeholderId, question: q, index_name: index,
+      skill: activeSkill, skill_label: skill?.label || activeSkill,
+    }
+    const patch = (p) => setResults(prev => prev.map(r => r._id === placeholderId ? { ...r, ...p } : r))
+    setResults(prev => [{ ...head, _loading: true }, ...prev])
+    try {
+      const body = { skill: activeSkill, question: q, index_name: index, language }
+      if (Object.keys(filters).length) {
+        body.filters = Object.fromEntries(Object.entries(filters).map(([k, vals]) => [k, vals.join(';')]))
+      }
+      const res = await fetch(`${server.replace(/\/$/, '')}/skill/query`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: controller.signal,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.message || data.error || res.statusText)
+      const result = { ...head, ...data, _loading: false }
+      patch(result)
+      setStatus(`${(data.sources || []).length} tekstbiter fra banken`)
+      saveConversation({
+        id: convId, ts: Date.now(), mode: 'skill', skill: activeSkill,
+        index, question: q, result,
+      })
+    } catch (e) {
+      setStatusErr(true)
+      if (e.name === 'AbortError' || cancelRef.current.cancelled) {
+        setStatus('Avbrutt av bruker')
+        patch({ _loading: false, _cancelled: true, _error: 'Avbrutt.' })
+      } else {
+        setStatus(`Feil: ${e.message}`)
+        patch({ _loading: false, _error: e.message })
+      }
+    } finally {
+      cancelRef.current = { controller: null, jobId: null, cancelled: false }
+      setLoading(false)
+    }
+  }
+
+  const placeholder = activeSkill
+    ? (bankSkills.find(s => s.key === activeSkill)?.description || 'Skriv et spørsmål…') + ' (skriv spørsmålet ditt)'
+    : (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
+      + ' (valgfritt — la stå tomt for å bruke analysetypens egen instruks)'
 
   return (
     <BankLabelsContext.Provider value={bankLabels}>
@@ -6450,6 +6933,17 @@ export default function App() {
           />
         </AdminDrawer>
 
+        <AdminDrawer open={skillsOpen} onClose={closeSkills}>
+          <SkillsAdmin
+            server={server}
+            indexes={indexes}
+            currentIndex={selectedIndex}
+            onBackToSearch={closeSkills}
+            onChanged={refreshBankSkills}
+            editKey={editSkillKey}
+          />
+        </AdminDrawer>
+
         <AdminDrawer open={analysesOpen} onClose={closeAnalyses}>
           <AnalysisAdmin
             server={server}
@@ -6511,7 +7005,7 @@ export default function App() {
           ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
             {availableQueryTypes.map(qt => {
-              const active = queryType === qt.key
+              const active = !activeSkill && queryType === qt.key
               // A template made here can be edited; a built-in is read-only, and
               // the server says which is which.
               const cfg = queryTypeDefs[qt.key]
@@ -6520,7 +7014,7 @@ export default function App() {
                 // The card is a button, so the pencil has to sit beside it
                 // rather than inside it.
                 <div key={qt.key} style={{ position: 'relative', display: 'flex' }}>
-                  <button onClick={() => setQueryType(qt.key)} style={{
+                  <button onClick={() => { setQueryType(qt.key); setActiveSkill('') }} style={{
                     flex: 1, minWidth: 0,
                     padding: '12px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
                     border: active ? `1.5px solid ${C.accent}` : `1px solid ${C.border}`,
@@ -6554,6 +7048,41 @@ export default function App() {
             })}
           </div>
           )}
+          {bankSkills.length > 0 && (
+            <>
+              <div style={{ ...metaLabel, margin: '16px 0 8px' }}>Skills — raskt svar fra ett søk i hele banken</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+                {bankSkills.map(s => {
+                  const active = activeSkill === s.key
+                  return (
+                    <div key={s.key} style={{ position: 'relative', display: 'flex' }}>
+                      <button onClick={() => setActiveSkill(s.key)} style={{
+                        flex: 1, minWidth: 0,
+                        padding: '12px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+                        border: active ? `1.5px solid ${C.accent}` : `1px dashed ${C.borderHi}`,
+                        background: active ? C.accentBg : C.surface, fontFamily: 'inherit',
+                      }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text, marginBottom: 3, paddingRight: 30 }}>⚡ {s.label}</div>
+                        <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.4 }}>{s.description}</div>
+                      </button>
+                      <button
+                        onClick={() => openSkillEditor(s.key)}
+                        title={`Rediger «${s.label}»`}
+                        aria-label={`Rediger skillen ${s.label}`}
+                        style={{
+                          position: 'absolute', top: 6, right: 8,
+                          border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+                          borderRadius: 6, width: 22, height: 22, lineHeight: 0,
+                          cursor: 'pointer', padding: 0,
+                          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                        }}><PenIcon /></button>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+          {!activeSkill && (
           <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={includeAggregate} onChange={e => setIncludeAggregate(e.target.checked)} style={{ marginTop: 3 }} />
             <span>
@@ -6564,6 +7093,7 @@ export default function App() {
               </span>
             </span>
           </label>
+          )}
         </div>
 
         {/* Search input — large, prominent */}
@@ -6697,7 +7227,9 @@ export default function App() {
           {results.map((data, i) =>
             data._type === 'aggregate'
               ? <AggregateResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
-              : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
+              : data._type === 'skill'
+                ? <SkillResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
+                : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
           )}
         </ServerContext.Provider>
 
@@ -6714,10 +7246,13 @@ export default function App() {
         themeName={themeName}
         onThemeChange={setThemeName}
         onOpenDocs={() => {
-          setSettingsOpen(false); setSidebarOpen(false); setAnalysesOpen(false); setView('admin')
+          setSettingsOpen(false); setSidebarOpen(false); setAnalysesOpen(false); setSkillsOpen(false); setEditSkillKey(''); setView('admin')
         }}
         onOpenTemplates={() => {
-          setSettingsOpen(false); setSidebarOpen(false); leaveAdmin(); setAnalysesOpen(true)
+          setSettingsOpen(false); setSidebarOpen(false); leaveAdmin(); setSkillsOpen(false); setEditSkillKey(''); setAnalysesOpen(true)
+        }}
+        onOpenSkills={() => {
+          setSettingsOpen(false); setSidebarOpen(false); leaveAdmin(); closeAnalyses(); setSkillsOpen(true)
         }}
       />
     </div>
