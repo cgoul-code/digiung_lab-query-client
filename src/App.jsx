@@ -901,8 +901,44 @@ function MarkdownText({ text, onCite }) {
   )
 }
 
+// A skill result as Markdown to paste into Teams or elsewhere: the question as
+// heading, the answer as the model wrote it, and the sources as a numbered list
+// with links, so the [n] in the text still resolve for the reader.
+function skillResultToMarkdown(data, { bankName, docHref }) {
+  const lines = [`# ${String(data.question || '').trim()}`, '']
+  const meta = [`**Skill:** ${data.skill_label || data.skill}`]
+  if (data.index_name) meta.push(`**Dokumentbank:** ${bankName(data.index_name)}`)
+  Object.entries(data.filters || {}).forEach(([k, v]) => {
+    meta.push(`**${FILTER_FIELDS.find(f => f.key === k)?.label ?? k}:** ${Array.isArray(v) ? v.join(', ') : v}`)
+  })
+  meta.push(`**Dato:** ${new Date().toISOString().slice(0, 10)}`)
+  lines.push(meta.join(' · '), '', String(data.answer || '').trim(), '')
+  const sources = data.sources || []
+  if (sources.length) {
+    lines.push('## Kilder', '')
+    sources.forEach((src, i) => {
+      const n = src.n ?? i + 1
+      const name = src.tittel || src.filename || 'ukjent'
+      const url = (src.deep_link || '').trim() || docHref(src)
+      const page = pageLocator(src.filename, src.page_number, { short: true })
+      const extra = [page, src.publisert_av].filter(Boolean).join(', ')
+      lines.push(`${n}. ${url ? `[${name}](${url})` : name}${extra ? ` (${extra})` : ''}`)
+    })
+    lines.push('')
+  }
+  return lines.join('\n')
+}
+
+const smallBtn = {
+  border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
+  borderRadius: 6, height: 24, padding: '0 8px', fontSize: 12, fontWeight: 500,
+  cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
+}
+
 function SkillResultCard({ data, onDismiss }) {
   const bankName = useBankName()
+  const docHref = useDocHref()
+  const [copied, setCopied] = useState(false)
   const sources = data.sources || []
   const isLoading = data._loading
   const appliedFilters = data.filters || {}
@@ -913,6 +949,19 @@ function SkillResultCard({ data, onDismiss }) {
     el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     el.animate?.([{ background: C.accentBg }, { background: 'transparent' }], { duration: 1600 })
   }
+  const canExport = !isLoading && !data._error && data.answer
+  const markdown = () => skillResultToMarkdown(data, { bankName, docHref })
+  const download = () => {
+    const slug = String(data.question || 'svar').toLowerCase()
+      .replace(/[^a-z0-9æøå]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'svar'
+    downloadText(`${data.skill || 'skill'}-${slug}.md`, markdown())
+  }
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(markdown())
+      setCopied(true); setTimeout(() => setCopied(false), 1800)
+    } catch { download() }
+  }
   return (
     <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -920,7 +969,17 @@ function SkillResultCard({ data, onDismiss }) {
         <Tag tone="accent">{data.skill_label || data.skill}</Tag>
         {data.index_name && <Tag tone="neutral">{bankName(data.index_name)}</Tag>}
         {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>søker…</span>}
-        {!isLoading && <DismissResult onDismiss={onDismiss} />}
+        {!isLoading && (
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {canExport && <>
+              <button onClick={copy} style={smallBtn} title="Kopier svaret som Markdown — lim inn i Teams">
+                {copied ? 'Kopiert ✓' : 'Kopier'}
+              </button>
+              <button onClick={download} style={smallBtn} title="Last ned svaret som Markdown-fil">↓ .md</button>
+            </>}
+            <DismissResult onDismiss={onDismiss} />
+          </div>
+        )}
       </div>
       <div style={{ fontSize: 17, fontWeight: 600, color: C.text, marginBottom: 10, lineHeight: 1.4 }}>{data.question}</div>
       {Object.keys(appliedFilters).length > 0 && (
