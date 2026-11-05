@@ -904,18 +904,33 @@ function MarkdownText({ text, onCite }) {
 // A skill result as Markdown to paste into Teams or elsewhere: the question as
 // heading, the answer as the model wrote it, and the sources as a numbered list
 // with links, so the [n] in the text still resolve for the reader.
-function skillResultToMarkdown(data, { bankName, docHref }) {
-  const lines = [`# ${String(data.question || '').trim()}`, '']
+function skillMetaLine(data, bankName) {
   const meta = [`**Skill:** ${data.skill_label || data.skill}`]
   if (data.index_name) meta.push(`**Dokumentbank:** ${bankName(data.index_name)}`)
   Object.entries(data.filters || {}).forEach(([k, v]) => {
     meta.push(`**${FILTER_FIELDS.find(f => f.key === k)?.label ?? k}:** ${Array.isArray(v) ? v.join(', ') : v}`)
   })
   meta.push(`**Dato:** ${new Date().toISOString().slice(0, 10)}`)
-  lines.push(meta.join(' · '), '', String(data.answer || '').trim(), '')
+  return meta.join(' · ')
+}
+
+// A whole samtale: the first question as title, then every turn as its own
+// section with its own sources — each turn searched anew, so its [n] are its own.
+function skillSessionToMarkdown(session, ctx) {
+  const turns = (session.turns || []).filter(t => !t._loading && !t._error && t.answer)
+  const lines = [`# Samtale: ${String(turns[0]?.question || '').trim()}`, '', skillMetaLine(session, ctx.bankName), '']
+  turns.forEach(t => lines.push(skillResultToMarkdown(t, { ...ctx, level: 2, meta: false })))
+  return lines.join('\n')
+}
+
+function skillResultToMarkdown(data, { bankName, docHref, level = 1, meta = true }) {
+  const h = '#'.repeat(level)
+  const lines = [`${h} ${String(data.question || '').trim()}`, '']
+  if (meta) lines.push(skillMetaLine(data, bankName), '')
+  lines.push(String(data.answer || '').trim(), '')
   const sources = data.sources || []
   if (sources.length) {
-    lines.push('## Kilder', '')
+    lines.push(level > 1 ? `**Kilder**` : '## Kilder', '')
     sources.forEach((src, i) => {
       const n = src.n ?? i + 1
       const name = src.tittel || src.filename || 'ukjent'
@@ -935,33 +950,87 @@ const smallBtn = {
   cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap',
 }
 
-function SkillResultCard({ data, onDismiss }) {
-  const bankName = useBankName()
-  const docHref = useDocHref()
+// Copy / download a piece of Markdown — the same text either way.
+function MdExportButtons({ makeText, filename, what = 'svaret' }) {
   const [copied, setCopied] = useState(false)
-  const sources = data.sources || []
-  const isLoading = data._loading
-  const appliedFilters = data.filters || {}
-  const anchor = (n) => `skill-${data._id}-src-${n}`
-  const cite = (n) => {
-    const el = document.getElementById(anchor(n))
-    if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-    el.animate?.([{ background: C.accentBg }, { background: 'transparent' }], { duration: 1600 })
-  }
-  const canExport = !isLoading && !data._error && data.answer
-  const markdown = () => skillResultToMarkdown(data, { bankName, docHref })
-  const download = () => {
-    const slug = String(data.question || 'svar').toLowerCase()
-      .replace(/[^a-z0-9æøå]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'svar'
-    downloadText(`${data.skill || 'skill'}-${slug}.md`, markdown())
-  }
+  const download = () => downloadText(filename(), makeText())
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(markdown())
+      await navigator.clipboard.writeText(makeText())
       setCopied(true); setTimeout(() => setCopied(false), 1800)
     } catch { download() }
   }
+  return <>
+    <button onClick={copy} style={smallBtn} title={`Kopier ${what} som Markdown — lim inn i Teams`}>
+      {copied ? 'Kopiert ✓' : 'Kopier'}
+    </button>
+    <button onClick={download} style={smallBtn} title={`Last ned ${what} som Markdown-fil`}>↓ .md</button>
+  </>
+}
+
+const mdSlug = (s) => String(s || 'svar').toLowerCase()
+  .replace(/[^a-z0-9æøå]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'svar'
+
+function AppliedFilterTags({ filters }) {
+  if (!Object.keys(filters || {}).length) return null
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 12 }}>
+      {Object.entries(filters).map(([k, v]) => (
+        <Tag key={k} tone="neutral">{FILTER_FIELDS.find(f => f.key === k)?.label ?? k}: {Array.isArray(v) ? v.join(', ') : v}</Tag>
+      ))}
+    </div>
+  )
+}
+
+// One question and its answer. In a samtale the sources fold away so the
+// thread stays readable; a [n] in the answer opens them.
+function SkillTurn({ data, inThread = false }) {
+  const [sourcesOpen, setSourcesOpen] = useState(!inThread)
+  const sources = data.sources || []
+  const isLoading = data._loading
+  const anchor = (n) => `skill-${data._id}-src-${n}`
+  const cite = (n) => {
+    setSourcesOpen(true)
+    requestAnimationFrame(() => {
+      const el = document.getElementById(anchor(n))
+      if (!el) return
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      el.animate?.([{ background: C.accentBg }, { background: 'transparent' }], { duration: 1600 })
+    })
+  }
+  const rewritten = inThread && data.search_query && data.search_query.trim() !== String(data.question || '').trim()
+  return <>
+    <div style={{ fontSize: inThread ? 16 : 17, fontWeight: 600, color: C.text, marginBottom: rewritten ? 4 : 10, lineHeight: 1.4 }}>{data.question}</div>
+    {rewritten && (
+      <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 10 }} title="Oppfølgingsspørsmålet er skrevet om ut fra samtalen før søket">
+        Søkte etter: «{data.search_query}»
+      </div>
+    )}
+    {isLoading ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 0', color: C.textMute, fontSize: 14 }}>
+        <LoadingDots /> Søker i dokumentbanken og skriver svar…
+      </div>
+    ) : data._error ? (
+      <div style={{ fontSize: 14, color: C.danger }}>{data._error === true ? 'Søket feilet.' : data._error}</div>
+    ) : (
+      <div style={{ marginBottom: sources.length ? '1rem' : 0 }}>
+        <MarkdownText text={data.answer} onCite={cite} />
+      </div>
+    )}
+    {!isLoading && sources.length > 0 && <>
+      {inThread
+        ? <SectionToggle open={sourcesOpen} onToggle={() => setSourcesOpen(p => !p)} label={`Kilder (${sources.length})`} />
+        : <div style={{ ...metaLabel, marginBottom: 8 }}>Kilder ({sources.length})</div>}
+      {sourcesOpen && sources.map((src, i) => <SourceItem key={i} src={src} id={anchor(src.n ?? i + 1)} />)}
+    </>}
+  </>
+}
+
+function SkillResultCard({ data, onDismiss }) {
+  const bankName = useBankName()
+  const docHref = useDocHref()
+  const isLoading = data._loading
+  const canExport = !isLoading && !data._error && data.answer
   return (
     <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -971,39 +1040,55 @@ function SkillResultCard({ data, onDismiss }) {
         {isLoading && <span style={{ fontSize: 12, color: C.accent, fontWeight: 500 }}>søker…</span>}
         {!isLoading && (
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-            {canExport && <>
-              <button onClick={copy} style={smallBtn} title="Kopier svaret som Markdown — lim inn i Teams">
-                {copied ? 'Kopiert ✓' : 'Kopier'}
-              </button>
-              <button onClick={download} style={smallBtn} title="Last ned svaret som Markdown-fil">↓ .md</button>
-            </>}
+            {canExport && <MdExportButtons
+              makeText={() => skillResultToMarkdown(data, { bankName, docHref })}
+              filename={() => `${data.skill || 'skill'}-${mdSlug(data.question)}.md`} />}
             <DismissResult onDismiss={onDismiss} />
           </div>
         )}
       </div>
-      <div style={{ fontSize: 17, fontWeight: 600, color: C.text, marginBottom: 10, lineHeight: 1.4 }}>{data.question}</div>
-      {Object.keys(appliedFilters).length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 12 }}>
-          {Object.entries(appliedFilters).map(([k, v]) => (
-            <Tag key={k} tone="neutral">{FILTER_FIELDS.find(f => f.key === k)?.label ?? k}: {Array.isArray(v) ? v.join(', ') : v}</Tag>
-          ))}
+      <AppliedFilterTags filters={data.filters} />
+      <SkillTurn data={data} />
+    </div>
+  )
+}
+
+// A samtale with a skill: every turn in order, oldest first, so it reads like
+// the conversation it was. «Ny samtale» starts over; this one stays in the logg.
+function SkillSessionCard({ data, onDismiss, onNewSession, active }) {
+  const bankName = useBankName()
+  const docHref = useDocHref()
+  const turns = data.turns || []
+  const busy = turns.some(t => t._loading)
+  const canExport = !busy && turns.some(t => !t._error && t.answer)
+  return (
+    <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem', borderColor: active ? C.accentSoft : undefined }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <span style={{ ...metaLabel }}>Samtale</span>
+        <Tag tone="accent">{data.skill_label || data.skill}</Tag>
+        {data.index_name && <Tag tone="neutral">{bankName(data.index_name)}</Tag>}
+        <span style={{ fontSize: 12, color: C.textMute }}>
+          {turns.length} spørsmål{active ? ' · pågår' : ' · avsluttet'}
+        </span>
+        {!busy && (
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {canExport && <MdExportButtons what="samtalen"
+              makeText={() => skillSessionToMarkdown(data, { bankName, docHref })}
+              filename={() => `${data.skill || 'skill'}-samtale-${mdSlug(turns[0]?.question)}.md`} />}
+            {onNewSession && <button onClick={onNewSession} style={smallBtn} title="Avslutt denne samtalen og start en ny — denne ligger fortsatt i samtaleloggen">＋ Ny samtale</button>}
+            <DismissResult onDismiss={onDismiss} />
+          </div>
+        )}
+      </div>
+      <AppliedFilterTags filters={data.filters} />
+      {turns.map((t, i) => (
+        <div key={t._id ?? i} style={{
+          borderTop: i ? `1px solid ${C.border}` : 'none', paddingTop: i ? 16 : 0, marginTop: i ? 16 : 0,
+        }}>
+          <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4, fontWeight: 600 }}>Spørsmål {i + 1}</div>
+          <SkillTurn data={t} inThread />
         </div>
-      )}
-      {isLoading ? (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '14px 0', color: C.textMute, fontSize: 14 }}>
-          <LoadingDots /> Søker i dokumentbanken og skriver svar…
-        </div>
-      ) : data._error ? (
-        <div style={{ fontSize: 14, color: C.danger }}>{data._error === true ? 'Søket feilet.' : data._error}</div>
-      ) : (
-        <div style={{ marginBottom: sources.length ? '1.25rem' : 0 }}>
-          <MarkdownText text={data.answer} onCite={cite} />
-        </div>
-      )}
-      {!isLoading && sources.length > 0 && <>
-        <div style={{ ...metaLabel, marginBottom: 8 }}>Kilder ({sources.length})</div>
-        {sources.map((src, i) => <SourceItem key={i} src={src} id={anchor(src.n ?? i + 1)} />)}
-      </>}
+      ))}
     </div>
   )
 }
@@ -6139,6 +6224,9 @@ function ConversationSidebar({ open, onToggle, history, activeId, onSelect, onDe
                   padding: '1px 6px', borderRadius: 99, background: C.bg, border: `1px solid ${C.border}`,
                   maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{entry.index || '—'}</span>
+                {entry.result?._type === 'skill_session' && (
+                  <span title="Samtale med oppfølgingsspørsmål">💬 {entry.turns || entry.result.turns?.length || 1}</span>
+                )}
                 <span>{relTime(entry.ts)}</span>
               </div>
               <button onClick={e => { e.stopPropagation(); onDelete(entry.id) }} title="Slett samtale"
@@ -6342,9 +6430,17 @@ export default function App() {
     setView('search')
     setResults(entry.result ? [entry.result] : [])
     setActiveConvId(entry.id)
-    setQuestion(entry.question || '')
     if (entry.queryType) setQueryType(entry.queryType)
     setActiveSkill(entry.skill || '')
+    // A samtale picks up where it was left: the next question continues it.
+    if (entry.result?._type === 'skill_session') {
+      setSkillSessionId(entry.result._id)
+      setSkillChatState(true)
+      try { localStorage.setItem('skillChat', '1') } catch { /* private window */ }
+      setQuestion('')
+    } else {
+      setQuestion(entry.question || '')
+    }
     setStatus('')
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
@@ -6359,6 +6455,29 @@ export default function App() {
   healthRef.current = health
   const cancelRef                       = useRef({ controller: null, jobId: null, cancelled: false })
   const [results, setResults]           = useState([])
+  const resultsRef                      = useRef(results)
+  resultsRef.current = results
+  // Samtalemodus for skills: follow-up questions continue the open samtale.
+  // The choice is remembered per browser; the samtale itself is the
+  // skill_session result whose _id is skillSessionId.
+  const [skillChat, setSkillChatState]  = useState(() => {
+    try { return localStorage.getItem('skillChat') === '1' } catch { return false }
+  })
+  const setSkillChat = useCallback((on) => {
+    setSkillChatState(on)
+    try { localStorage.setItem('skillChat', on ? '1' : '0') } catch { /* private window */ }
+  }, [])
+  const [skillSessionId, setSkillSessionId] = useState(null)
+  // Ends the open samtale: it leaves the screen but stays in the samtalelogg.
+  const newSkillSession = useCallback(() => {
+    setResults(prev => prev.filter(r => r._type !== 'skill_session'))
+    setSkillSessionId(null)
+    setQuestion('')
+    setActiveConvId(null)
+    setStatusErr(false)
+    setStatus('Ny samtale — skriv det første spørsmålet.')
+    document.getElementById('analysis-question')?.focus()
+  }, [])
   // Clears one result off the screen. The run itself stays in the samtalelogg.
   const dismissResult = useCallback((i) => {
     setResults(prev => prev.filter((_, j) => j !== i))
@@ -6793,7 +6912,9 @@ export default function App() {
     }
   }
 
-  // One search across the bank and one answer — no job to poll.
+  // One search across the bank and one answer — no job to poll. In samtalemodus
+  // the answer joins the open samtale and the earlier turns go along as history;
+  // the server keeps no session, so the samtale lives here (and in the logg).
   const runSkill = async (q) => {
     const skill = bankSkills.find(s => s.key === activeSkill)
     if (!q) {
@@ -6803,8 +6924,6 @@ export default function App() {
     }
     setLoading(true)
     setStatusErr(false)
-    setStatus(`Søker med «${skill?.label || activeSkill}»…`)
-    const convId = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
     const controller = new AbortController()
     cancelRef.current = { controller, jobId: null, cancelled: false }
     const filters = activeFiltersRef.current
@@ -6814,13 +6933,43 @@ export default function App() {
       _type: 'skill', _id: placeholderId, question: q, index_name: index,
       skill: activeSkill, skill_label: skill?.label || activeSkill,
     }
-    const patch = (p) => setResults(prev => prev.map(r => r._id === placeholderId ? { ...r, ...p } : r))
-    setResults(prev => [{ ...head, _loading: true }, ...prev])
+    // The samtale to continue: only the open one, and only while it is about
+    // the same skill and bank — switching either starts a fresh one.
+    let session = null
+    if (skillChat) {
+      session = resultsRef.current.find(r => r._type === 'skill_session' && r._id === skillSessionId
+        && r.skill === activeSkill && r.index_name === index) || null
+      if (!session) {
+        session = {
+          _type: 'skill_session', _id: placeholderId + 1, convId: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+          index_name: index, skill: activeSkill, skill_label: skill?.label || activeSkill, turns: [],
+        }
+        const fresh = session
+        setResults(prev => [fresh, ...prev])
+        setSkillSessionId(fresh._id)
+      }
+    }
+    const priorTurns = session ? session.turns.filter(t => !t._loading && !t._error && t.answer) : []
+    const convId = session ? session.convId : 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+    const sessionId = session?._id
+    setStatus(priorTurns.length
+      ? `Oppfølgingsspørsmål ${priorTurns.length + 1} i samtalen med «${skill?.label || activeSkill}»…`
+      : `Søker med «${skill?.label || activeSkill}»…`)
+    const patch = sessionId
+      ? (p) => setResults(prev => prev.map(r => r._id !== sessionId ? r
+          : { ...r, turns: r.turns.map(t => t._id === placeholderId ? { ...t, ...p } : t) }))
+      : (p) => setResults(prev => prev.map(r => r._id === placeholderId ? { ...r, ...p } : r))
+    if (sessionId) {
+      setResults(prev => prev.map(r => r._id === sessionId ? { ...r, turns: [...r.turns, { ...head, _loading: true }] } : r))
+    } else {
+      setResults(prev => [{ ...head, _loading: true }, ...prev])
+    }
     try {
       const body = { skill: activeSkill, question: q, index_name: index, language }
       if (Object.keys(filters).length) {
         body.filters = Object.fromEntries(Object.entries(filters).map(([k, vals]) => [k, vals.join(';')]))
       }
+      if (priorTurns.length) body.history = priorTurns.map(t => ({ question: t.question, answer: t.answer }))
       const res = await fetch(`${server.replace(/\/$/, '')}/skill/query`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal: controller.signal,
@@ -6830,10 +6979,20 @@ export default function App() {
       const result = { ...head, ...data, _loading: false }
       patch(result)
       setStatus(`${(data.sources || []).length} tekstbiter fra banken`)
-      saveConversation({
-        id: convId, ts: Date.now(), mode: 'skill', skill: activeSkill,
-        index, question: q, result,
-      })
+      if (sessionId) {
+        setQuestion('')
+        const base = session
+        saveConversation({
+          id: convId, ts: Date.now(), mode: 'skill', skill: activeSkill, index,
+          question: priorTurns[0]?.question || q, turns: priorTurns.length + 1,
+          result: { ...base, filters: base.filters || data.filters, turns: [...priorTurns, result] },
+        })
+      } else {
+        saveConversation({
+          id: convId, ts: Date.now(), mode: 'skill', skill: activeSkill,
+          index, question: q, result,
+        })
+      }
     } catch (e) {
       setStatusErr(true)
       if (e.name === 'AbortError' || cancelRef.current.cancelled) {
@@ -6849,7 +7008,15 @@ export default function App() {
     }
   }
 
-  const placeholder = activeSkill
+  // The samtale the next skill question continues, if any — what the input,
+  // the button and «Ny samtale» are shown for.
+  const openSkillSession = activeSkill && skillChat
+    ? results.find(r => r._type === 'skill_session' && r._id === skillSessionId
+        && r.skill === activeSkill && r.index_name === selectedIndex && (r.turns || []).length > 0)
+    : null
+  const placeholder = openSkillSession
+    ? 'Still et oppfølgingsspørsmål — samtalen så langt huskes…'
+    : activeSkill
     ? (bankSkills.find(s => s.key === activeSkill)?.description || 'Skriv et spørsmål…') + ' (skriv spørsmålet ditt)'
     : (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
       + ' (valgfritt — la stå tomt for å bruke analysetypens egen instruks)'
@@ -7141,6 +7308,18 @@ export default function App() {
               </div>
             </>
           )}
+          {activeSkill && (
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: 'pointer', ...lockedWhile(loading) }}>
+            <input type="checkbox" checked={skillChat} onChange={e => setSkillChat(e.target.checked)} style={{ marginTop: 3 }} />
+            <span>
+              <span style={{ fontSize: 13, color: C.text }}>Samtalemodus — still oppfølgingsspørsmål</span>
+              <span style={{ display: 'block', fontSize: 12, color: C.textMute, lineHeight: 1.5 }}>
+                Svarene samles i én samtale, og skillen husker det som er spurt og svart når du spør videre.
+                Start en ny samtale når du bytter tema. Uten dette er hvert spørsmål et nytt, frittstående søk.
+              </span>
+            </span>
+          </label>
+          )}
           {!activeSkill && (
           <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: 'pointer' }}>
             <input type="checkbox" checked={includeAggregate} onChange={e => setIncludeAggregate(e.target.checked)} style={{ marginTop: 3 }} />
@@ -7210,8 +7389,17 @@ export default function App() {
               fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
               minWidth: 110,
             }}>
-              {loading ? <LoadingDots /> : 'Analyser'}
+              {loading ? <LoadingDots /> : openSkillSession ? 'Spør videre' : activeSkill ? 'Spør' : 'Analyser'}
             </button>
+            {openSkillSession && !loading && (
+              <button onClick={newSkillSession} title="Avslutt samtalen og begynn på nytt — den ligger fortsatt i samtaleloggen" style={{
+                padding: '12px 16px', borderRadius: 10,
+                border: `1px solid ${C.borderHi}`, background: C.surface, color: C.text,
+                cursor: 'pointer', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
+              }}>
+                ＋ Ny samtale
+              </button>
+            )}
             {loading && (
               <button onClick={cancelRun} style={{
                 padding: '12px 18px', borderRadius: 10,
@@ -7288,6 +7476,11 @@ export default function App() {
               ? <AggregateResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
               : data._type === 'skill'
                 ? <SkillResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
+              : data._type === 'skill_session'
+                ? <SkillSessionCard key={data._id} data={data}
+                    active={skillChat && data._id === skillSessionId}
+                    onNewSession={skillChat && data._id === skillSessionId ? newSkillSession : null}
+                    onDismiss={() => { dismissResult(i); if (data._id === skillSessionId) setSkillSessionId(null) }} />
                 : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
           )}
         </ServerContext.Provider>
