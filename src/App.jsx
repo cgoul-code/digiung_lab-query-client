@@ -5313,7 +5313,7 @@ function TemplateWizard({ base, initial, onCancel, onDone }) {
 // the panel shows, the prompt as the body. The server reads the same shape.
 function skillToMarkdown(s) {
   const one = (v) => String(v ?? '').replace(/\n+/g, ' ').trim()
-  return `---\nname: ${one(s.label)}\ndescription: ${one(s.description)}\ntop_k: ${s.top_k ?? 10}\n---\n\n${s.prompt || ''}\n`
+  return `---\nname: ${one(s.label)}\ndescription: ${one(s.description)}\ntop_k: ${s.top_k ?? 10}\n${s.dialog ? 'dialog: true\n' : ''}---\n\n${s.prompt || ''}\n`
 }
 
 function downloadText(filename, text) {
@@ -5324,7 +5324,7 @@ function downloadText(filename, text) {
   URL.revokeObjectURL(url)
 }
 
-const EMPTY_SKILL = { label: '', description: '', top_k: 10, prompt: '' }
+const EMPTY_SKILL = { label: '', description: '', top_k: 10, dialog: false, prompt: '' }
 
 function SkillsAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged, editKey }) {
   const bankName = useBankName()
@@ -5378,7 +5378,7 @@ function SkillsAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged,
     `Lagret. «${bankName(bank)}» tilbyr ${bankPick.size} ${bankPick.size === 1 ? 'skill' : 'skills'}.`)
 
   const saveDraft = () => run(async () => {
-    const body = { label: draft.label, description: draft.description, top_k: draft.top_k, prompt: draft.prompt }
+    const body = { label: draft.label, description: draft.description, top_k: draft.top_k, dialog: !!draft.dialog, prompt: draft.prompt }
     if (editing) await call(`${base}/admin/skills/${encodeURIComponent(editing)}`, 'PUT', body)
     else await call(`${base}/admin/skills`, 'POST', { ...body, banks: bank ? [bank] : [] })
     setEditing(null)
@@ -5400,7 +5400,7 @@ function SkillsAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged,
 
   const startEdit = (s) => {
     setEditing(s.key)
-    setDraft({ label: s.label, description: s.description || '', top_k: s.top_k, prompt: s.prompt })
+    setDraft({ label: s.label, description: s.description || '', top_k: s.top_k, dialog: !!s.dialog, prompt: s.prompt })
     setMsg(''); setErr('')
   }
 
@@ -5493,6 +5493,17 @@ function SkillsAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged,
           <label style={lbl}>Antall tekstbiter fra banken (1–30)</label>
           <input type="number" min={1} max={30} value={draft.top_k}
             onChange={e => setDraft(d => ({ ...d, top_k: e.target.value }))} style={{ ...field, width: 100 }} />
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12, cursor: 'pointer' }}>
+            <input type="checkbox" checked={!!draft.dialog} style={{ marginTop: 3 }}
+              onChange={e => setDraft(d => ({ ...d, dialog: e.target.checked }))} />
+            <span>
+              <span style={{ fontSize: 13, color: C.text }}>Dialogbasert</span>
+              <span style={{ display: 'block', fontSize: 12, color: C.textMute, lineHeight: 1.5 }}>
+                Skillen kjører alltid som en samtale: den husker det som er spurt og svart, og kan stille
+                oppklarende spørsmål tilbake når spørsmålet er uklart eller søket ikke finner noe.
+              </span>
+            </span>
+          </label>
           <label style={lbl}>Prompt</label>
           <AutoTextarea value={draft.prompt} onChange={e => setDraft(d => ({ ...d, prompt: e.target.value }))}
             spellCheck={false} style={{
@@ -5518,7 +5529,7 @@ function SkillsAdmin({ server, indexes, currentIndex, onBackToSearch, onChanged,
               <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>{s.label}</div>
               {s.description && <div style={{ fontSize: 12.5, color: C.textMute, marginTop: 2 }}>{s.description}</div>}
               <div style={{ fontSize: 11.5, color: C.textFaint, marginTop: 4 }}>
-                {s.top_k} tekstbiter · {(s.banks || []).length
+                {s.top_k} tekstbiter · {s.dialog ? 'dialogbasert · ' : ''}{(s.banks || []).length
                   ? `på i ${(s.banks || []).map(bankName).join(', ')}`
                   : 'ikke slått på i noen bank'}
               </div>
@@ -6936,7 +6947,7 @@ export default function App() {
     // The samtale to continue: only the open one, and only while it is about
     // the same skill and bank — switching either starts a fresh one.
     let session = null
-    if (skillChat) {
+    if (skillChat || skill?.dialog) {
       session = resultsRef.current.find(r => r._type === 'skill_session' && r._id === skillSessionId
         && r.skill === activeSkill && r.index_name === index) || null
       if (!session) {
@@ -7010,12 +7021,15 @@ export default function App() {
 
   // The samtale the next skill question continues, if any — what the input,
   // the button and «Ny samtale» are shown for.
-  const openSkillSession = activeSkill && skillChat
+  // A dialogbasert skill is always a samtale, whatever the checkbox says.
+  const skillIsDialog = !!bankSkills.find(s => s.key === activeSkill)?.dialog
+  const chatOn = skillChat || skillIsDialog
+  const openSkillSession = activeSkill && chatOn
     ? results.find(r => r._type === 'skill_session' && r._id === skillSessionId
         && r.skill === activeSkill && r.index_name === selectedIndex && (r.turns || []).length > 0)
     : null
   const placeholder = openSkillSession
-    ? 'Still et oppfølgingsspørsmål — samtalen så langt huskes…'
+    ? (skillIsDialog ? 'Svar eller spør videre — samtalen så langt huskes…' : 'Still et oppfølgingsspørsmål — samtalen så langt huskes…')
     : activeSkill
     ? (bankSkills.find(s => s.key === activeSkill)?.description || 'Skriv et spørsmål…') + ' (skriv spørsmålet ditt)'
     : (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
@@ -7309,13 +7323,16 @@ export default function App() {
             </>
           )}
           {activeSkill && (
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: 'pointer', ...lockedWhile(loading) }}>
-            <input type="checkbox" checked={skillChat} onChange={e => setSkillChat(e.target.checked)} style={{ marginTop: 3 }} />
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 12, cursor: skillIsDialog ? 'default' : 'pointer', ...lockedWhile(loading) }}>
+            <input type="checkbox" checked={chatOn} disabled={skillIsDialog} onChange={e => setSkillChat(e.target.checked)} style={{ marginTop: 3 }} />
             <span>
-              <span style={{ fontSize: 13, color: C.text }}>Samtalemodus — still oppfølgingsspørsmål</span>
+              <span style={{ fontSize: 13, color: C.text }}>
+                {skillIsDialog ? 'Dialog — skillen husker samtalen og kan spørre tilbake' : 'Samtalemodus — still oppfølgingsspørsmål'}
+              </span>
               <span style={{ display: 'block', fontSize: 12, color: C.textMute, lineHeight: 1.5 }}>
-                Svarene samles i én samtale, og skillen husker det som er spurt og svart når du spør videre.
-                Start en ny samtale når du bytter tema. Uten dette er hvert spørsmål et nytt, frittstående søk.
+                {skillIsDialog
+                  ? 'Denne skillen er dialogbasert: svarene samles i én samtale, og den stiller oppklarende spørsmål når den trenger det. Start en ny samtale når du bytter tema.'
+                  : 'Svarene samles i én samtale, og skillen husker det som er spurt og svart når du spør videre. Start en ny samtale når du bytter tema. Uten dette er hvert spørsmål et nytt, frittstående søk.'}
               </span>
             </span>
           </label>
@@ -7478,8 +7495,8 @@ export default function App() {
                 ? <SkillResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
               : data._type === 'skill_session'
                 ? <SkillSessionCard key={data._id} data={data}
-                    active={skillChat && data._id === skillSessionId}
-                    onNewSession={skillChat && data._id === skillSessionId ? newSkillSession : null}
+                    active={chatOn && data._id === skillSessionId}
+                    onNewSession={chatOn && data._id === skillSessionId ? newSkillSession : null}
                     onDismiss={() => { dismissResult(i); if (data._id === skillSessionId) setSkillSessionId(null) }} />
                 : <QueryResultCard key={i} data={data} onDismiss={() => dismissResult(i)} />
           )}
