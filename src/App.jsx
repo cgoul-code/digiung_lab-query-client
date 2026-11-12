@@ -803,7 +803,7 @@ const INLINE_MD = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[\d+(?:\s*[,–-]\s*\
 function MdInline({ text, onCite }) {
   return String(text).split(INLINE_MD).map((part, i) => {
     if (!part) return null
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={i}>{part.slice(2, -2)}</strong>
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) return <strong key={i} style={{ fontWeight: 600 }}>{part.slice(2, -2)}</strong>
     if (part.startsWith('`') && part.endsWith('`')) return <code key={i} style={{ fontSize: '0.92em', background: C.bg, padding: '0 4px', borderRadius: 4 }}>{part.slice(1, -1)}</code>
     if (/^\*[^*]/.test(part) && part.endsWith('*') && part.length > 2) return <em key={i}>{part.slice(1, -1)}</em>
     if (/^\[\d/.test(part) && onCite) {
@@ -857,13 +857,56 @@ function MdList({ nodes, onCite, depth = 0 }) {
   })
 }
 
+function MdTable({ head, rows, onCite }) {
+  const cell = { padding: '8px 12px 8px 0', verticalAlign: 'top', textAlign: 'left', borderBottom: `1px solid ${C.border}` }
+  return (
+    <div style={{ overflowX: 'auto', margin: '4px 0 14px' }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 14, lineHeight: 1.55 }}>
+        {head && (
+          <thead>
+            <tr>{head.map((c, j) => (
+              <th key={j} style={{ ...cell, verticalAlign: 'bottom', fontSize: 12.5, fontWeight: 600, color: C.textMute, borderBottom: `2px solid ${C.border}` }}>
+                <MdInline text={c} onCite={onCite} />
+              </th>
+            ))}</tr>
+          </thead>
+        )}
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i}>{r.map((c, j) => (
+              <td key={j} style={{ ...cell, fontWeight: j === 0 && r.length > 1 ? 600 : 400, minWidth: j === 0 ? 110 : 160 }}>
+                <MdInline text={c} onCite={onCite} />
+              </td>
+            ))}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function MarkdownText({ text, onCite }) {
   const blocks = []
-  let list = null, para = []
+  let list = null, para = [], table = null
   const flushPara = () => { if (para.length) { blocks.push({ t: 'p', text: para.join(' ') }); para = [] } }
   const flushList = () => { if (list) { blocks.push({ t: 'list', nodes: buildListTree(list) }); list = null } }
+  // | a | b | lines; a |---|---| line under the first row makes that row the head.
+  const flushTable = () => {
+    if (!table) return
+    const rows = table.map(l => l.slice(1, -1).split('|').map(c => c.trim()))
+    const sepAt = rows.findIndex(r => r.every(c => /^:?-{2,}:?$/.test(c)))
+    blocks.push({ t: 'table', head: sepAt === 1 ? rows[0] : null, rows: rows.filter((_, i) => i !== sepAt && !(sepAt === 1 && i === 0)) })
+    table = null
+  }
   for (const raw of String(text || '').split('\n')) {
     const line = raw.trim()
+    if (/^\|.*\|$/.test(line) && line.length > 2) {
+      flushPara(); flushList()
+      if (!table) table = []
+      table.push(line)
+      continue
+    }
+    flushTable()
     const indent = raw.replace(/\t/g, '    ').match(/^ */)[0].length
     const h = line.match(/^(#{1,4})\s+(.*)$/)
     const ul = line.match(/^[-*•]\s+(.*)$/)
@@ -882,18 +925,19 @@ function MarkdownText({ text, onCite }) {
     flushList()
     para.push(line)
   }
-  flushPara(); flushList()
+  flushPara(); flushList(); flushTable()
 
   const hSize = { 1: 18, 2: 16, 3: 15, 4: 14 }
   return (
     <div style={{ fontSize: 15, lineHeight: 1.7, color: C.text }}>
       {blocks.map((b, i) => {
         if (b.t === 'h') return (
-          <div key={i} style={{ fontSize: hSize[b.level], fontWeight: 700, margin: i ? '18px 0 6px' : '0 0 6px' }}>
+          <div key={i} style={{ fontSize: hSize[b.level], fontWeight: 600, margin: i ? '20px 0 6px' : '0 0 6px' }}>
             <MdInline text={b.text} onCite={onCite} />
           </div>
         )
         if (b.t === 'p') return <p key={i} style={{ margin: '0 0 10px' }}><MdInline text={b.text} onCite={onCite} /></p>
+        if (b.t === 'table') return <MdTable key={i} head={b.head} rows={b.rows} onCite={onCite} />
         return <MdList key={i} nodes={b.nodes} onCite={onCite} />
 
       })}
@@ -1053,8 +1097,9 @@ function SkillResultCard({ data, onDismiss }) {
   )
 }
 
-// A samtale with a skill: every turn in order, oldest first, so it reads like
-// the conversation it was. «Ny samtale» starts over; this one stays in the logg.
+// A samtale with a skill: every turn, newest first, so the latest answer is at
+// the top under the question field. «Ny samtale» starts over; this one stays
+// in the logg. (The Markdown export keeps the order it was asked in.)
 function SkillSessionCard({ data, onDismiss, onNewSession, active }) {
   const bankName = useBankName()
   const docHref = useDocHref()
@@ -1081,11 +1126,11 @@ function SkillSessionCard({ data, onDismiss, onNewSession, active }) {
         )}
       </div>
       <AppliedFilterTags filters={data.filters} />
-      {turns.map((t, i) => (
-        <div key={t._id ?? i} style={{
+      {turns.map((t, i) => ({ t, no: i + 1 })).reverse().map(({ t, no }, i) => (
+        <div key={t._id ?? no} style={{
           borderTop: i ? `1px solid ${C.border}` : 'none', paddingTop: i ? 16 : 0, marginTop: i ? 16 : 0,
         }}>
-          <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4, fontWeight: 600 }}>Spørsmål {i + 1}</div>
+          <div style={{ fontSize: 11, color: C.textFaint, marginBottom: 4, fontWeight: 600 }}>Spørsmål {no}</div>
           <SkillTurn data={t} inThread />
         </div>
       ))}
