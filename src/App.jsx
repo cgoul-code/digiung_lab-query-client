@@ -1026,6 +1026,116 @@ function AppliedFilterTags({ filters }) {
   )
 }
 
+// ── HTML-artifacts ────────────────────────────────────────────────────────────
+// When a skill answers with a whole HTML page, it is shown running instead of
+// as text. The page is model-written from document content, so it runs in a
+// sandboxed iframe with no access to this app (no same-origin) and a CSP that
+// keeps it from loading or calling anything on the network.
+
+// Finds the page in an answer: a ```html block, or a bare document (models
+// sometimes drop the fence and leave just an «html» line above it).
+function splitArtifact(text) {
+  const s = String(text || '')
+  let m = s.match(/```html?[ \t]*\r?\n([\s\S]*?)(?:\n```|$)/i)
+  if (m && /<(!doctype|html|body|main|div|section|table|style|svg)\b/i.test(m[1])) {
+    return { before: s.slice(0, m.index).trim(), html: m[1].trim(), after: s.slice(m.index + m[0].length).trim() }
+  }
+  m = s.match(/(?:^|\n)[ \t]*(?:html[ \t]*\r?\n)?[ \t]*((?:<!doctype html|<html[\s>])[\s\S]*?(?:<\/html>|$))/i)
+  if (m) {
+    return { before: s.slice(0, m.index).trim(), html: m[1].trim(), after: s.slice(m.index + m[0].length).replace(/^[\s`]+/, '').trim() }
+  }
+  return null
+}
+
+const ARTIFACT_CSP = '<meta http-equiv="Content-Security-Policy" content="'
+  + "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; "
+  + 'img-src data: blob:; font-src data:; media-src data: blob:">'
+// Tells this page how tall the artifact is, so the frame fits it without its own scrollbar.
+const ARTIFACT_RESIZE = '<script>(function(){function s(){parent.postMessage({artifactHeight:'
+  + 'Math.ceil(document.documentElement.scrollHeight)},"*")}addEventListener("load",s);'
+  + 'if(window.ResizeObserver)new ResizeObserver(s).observe(document.documentElement);s()})()</scr' + 'ipt>'
+
+function artifactSrcDoc(html) {
+  let doc = html
+  if (/<head[^>]*>/i.test(doc)) doc = doc.replace(/<head[^>]*>/i, m => m + ARTIFACT_CSP)
+  else if (/<html[^>]*>/i.test(doc)) doc = doc.replace(/<html[^>]*>/i, m => `${m}<head>${ARTIFACT_CSP}</head>`)
+  else doc = `<!doctype html><html><head><meta charset="utf-8">${ARTIFACT_CSP}</head><body>${doc}</body></html>`
+  const at = doc.toLowerCase().lastIndexOf('</body>')
+  return at >= 0 ? doc.slice(0, at) + ARTIFACT_RESIZE + doc.slice(at) : doc + ARTIFACT_RESIZE
+}
+
+function HtmlArtifact({ html }) {
+  const [tab, setTab] = useState('view')
+  const [height, setHeight] = useState(420)
+  const [copied, setCopied] = useState(false)
+  const frameRef = useRef(null)
+  const title = (html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '').trim() || 'HTML-side'
+  const srcDoc = useMemo(() => artifactSrcDoc(html), [html])
+
+  useEffect(() => {
+    const onMsg = (e) => {
+      if (e.source !== frameRef.current?.contentWindow) return
+      const h = e.data?.artifactHeight
+      if (typeof h === 'number' && h > 0) setHeight(Math.min(Math.max(h, 160), 6000))
+    }
+    window.addEventListener('message', onMsg)
+    return () => window.removeEventListener('message', onMsg)
+  }, [])
+
+  const blobUrl = () => URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }))
+  const download = () => {
+    const url = blobUrl()
+    const a = document.createElement('a')
+    a.href = url; a.download = `${mdSlug(title) || 'side'}.html`
+    document.body.appendChild(a); a.click(); a.remove()
+    URL.revokeObjectURL(url)
+  }
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(html)
+      setCopied(true); setTimeout(() => setCopied(false), 1800)
+    } catch { download() }
+  }
+  const tabBtn = (key, label) => (
+    <button onClick={() => setTab(key)} aria-pressed={tab === key} style={{
+      ...smallBtn, background: tab === key ? C.accentBg : C.bg, color: tab === key ? C.accent : C.textMute,
+      borderColor: tab === key ? C.accent : C.border, fontWeight: tab === key ? 600 : 500,
+    }}>{label}</button>
+  )
+
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: 'hidden', margin: '4px 0 14px', background: C.surface }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '8px 10px', borderBottom: `1px solid ${C.border}`, background: C.bg }}>
+        <span style={{ fontSize: 13, fontWeight: 600, color: C.text, marginRight: 'auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+        {tabBtn('view', 'Forhåndsvisning')}
+        {tabBtn('code', 'Kode')}
+        <button onClick={copy} style={smallBtn} title="Kopier HTML-koden">{copied ? 'Kopiert ✓' : 'Kopier kode'}</button>
+        <button onClick={download} style={smallBtn} title="Last ned siden som HTML-fil — åpnes i nettleseren">↓ .html</button>
+      </div>
+      {tab === 'view' ? (
+        <iframe ref={frameRef} title={title} sandbox="allow-scripts" srcDoc={srcDoc}
+          style={{ display: 'block', width: '100%', height, border: 0, background: '#fff' }} />
+      ) : (
+        <pre style={{
+          margin: 0, padding: '12px 14px', maxHeight: 520, overflow: 'auto', fontSize: 12, lineHeight: 1.55,
+          background: C.surface, color: C.text, whiteSpace: 'pre', tabSize: 2,
+        }}>{html}</pre>
+      )}
+    </div>
+  )
+}
+
+// A skill's answer: Markdown, with an HTML page in it shown as a running artifact.
+function SkillAnswer({ text, onCite }) {
+  const art = useMemo(() => splitArtifact(text), [text])
+  if (!art) return <MarkdownText text={text} onCite={onCite} />
+  return <>
+    {art.before && <MarkdownText text={art.before} onCite={onCite} />}
+    <HtmlArtifact html={art.html} />
+    {art.after && <MarkdownText text={art.after} onCite={onCite} />}
+  </>
+}
+
 // One question and its answer. In a samtale the sources fold away so the
 // thread stays readable; a [n] in the answer opens them.
 function SkillTurn({ data, inThread = false }) {
@@ -1058,7 +1168,7 @@ function SkillTurn({ data, inThread = false }) {
       <div style={{ fontSize: 14, color: C.danger }}>{data._error === true ? 'Søket feilet.' : data._error}</div>
     ) : (
       <div style={{ marginBottom: sources.length ? '1rem' : 0 }}>
-        <MarkdownText text={data.answer} onCite={cite} />
+        <SkillAnswer text={data.answer} onCite={cite} />
       </div>
     )}
     {!isLoading && sources.length > 0 && <>
