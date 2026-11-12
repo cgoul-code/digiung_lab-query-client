@@ -1064,13 +1064,163 @@ function artifactSrcDoc(html) {
   return at >= 0 ? doc.slice(0, at) + ARTIFACT_RESIZE + doc.slice(at) : doc + ARTIFACT_RESIZE
 }
 
-function HtmlArtifact({ html }) {
+// A page the model writes cites its passages as [n], the same way the Markdown
+// answers do. On screen the app lists the sources under the answer, but the page
+// leaves on its own the moment it is downloaded or copied, and then nothing in
+// it says what [3] was. So the list is built into the page, and the markers in
+// the text link into it — the same thing skillResultToMarkdown does for .md.
+
+// One number, or several: [3], [1, 2], [1-3]. Separators are kept as written.
+const CITATION = /\[\d+(?:\s*[,\u2013-]\s*\d+)*\]/
+
+const SOURCES_CSS = `
+.kilder{margin:2.5rem 0 0;padding:1rem 0 0;border-top:1px solid #d4d4d8;
+  font:13px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;color:#3f3f46;text-align:left}
+.kilder summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:.4rem;
+  font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#71717a;
+  padding:2px 0;user-select:none}
+.kilder summary::-webkit-details-marker{display:none}
+.kilder summary::before{content:"\\25B8";font-size:11px}
+.kilder details[open]>summary::before{content:"\\25BE"}
+.kilder summary:hover{color:#3f3f46}
+.kilder ol{margin:.6rem 0 0;padding-left:1.7rem}
+.kilder li{margin:0 0 .35rem;padding:2px 4px;border-radius:4px}
+.kilder li:target,.kilder li.kilde-truffet{background:#eff6ff}
+.kilder a{color:#2563eb}
+.kilder .kilde-meta{color:#71717a}
+`
+
+// A [n] points into the list while the list is collapsed, so the page carries
+// what it takes to open it. The click is handled directly rather than left to
+// the #kilde-n jump: inside the sandboxed preview the frame is an about:srcdoc
+// document, where a fragment link does not navigate at all — the hash never
+// changes, so neither :target nor hashchange ever fires. Clicking works in the
+// downloaded file too, and the hash path stays for anyone arriving on a link.
+const SOURCES_REVEAL = `(function(){`
+  + `function show(el){var d=el.closest('details');if(d&&!d.open)d.open=true;`
+  + `var p=document.querySelector('.kilder li.kilde-truffet');`
+  + `if(p)p.classList.remove('kilde-truffet');el.classList.add('kilde-truffet');`
+  + `el.scrollIntoView({block:'center'})}`
+  + `function byHash(){var el=location.hash&&document.getElementById(location.hash.slice(1));`
+  + `if(el)show(el)}`
+  + `addEventListener('hashchange',byHash);addEventListener('load',byHash);`
+  + `addEventListener('click',function(e){`
+  + `var a=e.target&&e.target.closest&&e.target.closest('a[href^="#kilde-"]');if(!a)return;`
+  + `var el=document.getElementById(a.getAttribute('href').slice(1));if(!el)return;`
+  + `e.preventDefault();show(el)})})()`
+
+// Every [n] in the page's own text becomes a link down to the list. Anything
+// inside a tag, a script, a style or an existing link is left alone — which is
+// why the page is walked as a DOM and not as a string.
+function linkCitations(doc, known) {
+  const texts = []
+  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT)
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (!CITATION.test(n.nodeValue || '')) continue
+    if (n.parentElement?.closest('a, script, style, textarea')) continue
+    texts.push(n)
+  }
+  for (const node of texts) {
+    const frag = doc.createDocumentFragment()
+    for (const part of node.nodeValue.split(/(\[\d+(?:\s*[,\u2013-]\s*\d+)*\])/)) {
+      if (!part) continue
+      if (part[0] !== '[' || !CITATION.test(part)) { frag.append(part); continue }
+      const tokens = part.slice(1, -1).split(/(\s*[,\u2013-]\s*)/)
+      const hit = (tok) => tok.trim() !== '' && known.has(Number(tok))
+      // A number no source answers to is left exactly as the page wrote it.
+      if (!tokens.some(hit)) { frag.append(part); continue }
+      // Only the number becomes a link. The brackets and whatever the page
+      // wrapped them in stay put, so its own citation styling survives.
+      frag.append('[')
+      for (const tok of tokens) {
+        if (!tok) continue
+        if (!hit(tok)) { frag.append(tok); continue }
+        const a = doc.createElement('a')
+        a.href = `#kilde-${Number(tok)}`
+        a.textContent = tok
+        frag.append(a)
+      }
+      frag.append(']')
+    }
+    node.replaceWith(frag)
+  }
+}
+
+function sourcesSection(doc, sources, docHref) {
+  const section = doc.createElement('section')
+  section.className = 'kilder'
+  const style = doc.createElement('style')
+  style.textContent = SOURCES_CSS
+  const details = doc.createElement('details')
+  const summary = doc.createElement('summary')
+  summary.textContent = `Kilder (${sources.length})`
+  const list = doc.createElement('ol')
+  sources.forEach((src, i) => {
+    const n = src.n ?? i + 1
+    const li = doc.createElement('li')
+    li.id = `kilde-${n}`
+    li.value = n
+    const name = src.tittel || src.filename || 'ukjent'
+    const url = (src.deep_link || '').trim() || docHref(src)
+    if (url) {
+      const a = doc.createElement('a')
+      a.href = url
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      a.textContent = name
+      li.append(a)
+    } else li.append(name)
+    const extra = [pageLocator(src.filename, src.page_number, { short: true }), src.publisert_av]
+      .filter(Boolean).join(', ')
+    if (extra) {
+      const span = doc.createElement('span')
+      span.className = 'kilde-meta'
+      span.textContent = ` (${extra})`
+      li.append(span)
+    }
+    list.append(li)
+  })
+  const reveal = doc.createElement('script')
+  reveal.textContent = SOURCES_REVEAL
+  details.append(summary, list)
+  section.append(style, details, reveal)
+  return section
+}
+
+// Parsing with DOMParser is inert — no script runs, nothing is fetched — and it
+// hands back a document that is valid whatever the model wrote, fragment or
+// whole page. If it fails, the page is used exactly as it came.
+function withSources(html, sources, docHref) {
+  if (!sources?.length) return html
+  let doc
+  try { doc = new DOMParser().parseFromString(html, 'text/html') } catch { doc = null }
+  if (!doc?.body) return html
+  if (doc.querySelector('section.kilder')) return html
+
+  linkCitations(doc, new Set(sources.map((src, i) => src.n ?? i + 1)))
+  doc.body.append(sourcesSection(doc, sources, docHref))
+
+  // The titles are Norwegian, and a downloaded file is read off disk with no
+  // Content-Type to say what it is.
+  if (!doc.querySelector('meta[charset], meta[http-equiv="Content-Type" i]')) {
+    const meta = doc.createElement('meta')
+    meta.setAttribute('charset', 'utf-8')
+    doc.head.prepend(meta)
+  }
+  return `<!doctype html>\n${doc.documentElement.outerHTML}\n`
+}
+
+function HtmlArtifact({ html, sources }) {
   const [tab, setTab] = useState('view')
   const [height, setHeight] = useState(420)
   const [copied, setCopied] = useState(false)
   const frameRef = useRef(null)
-  const title = (html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '').trim() || 'HTML-side'
-  const srcDoc = useMemo(() => artifactSrcDoc(html), [html])
+  const docHref = useDocHref()
+  // Forhåndsvisning, Kode, Kopier and the download all show the one page,
+  // sources and all, so what you read is what you get.
+  const page = useMemo(() => withSources(html, sources, docHref), [html, sources, docHref])
+  const title = (page.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || '').trim() || 'HTML-side'
+  const srcDoc = useMemo(() => artifactSrcDoc(page), [page])
 
   useEffect(() => {
     const onMsg = (e) => {
@@ -1082,7 +1232,7 @@ function HtmlArtifact({ html }) {
     return () => window.removeEventListener('message', onMsg)
   }, [])
 
-  const blobUrl = () => URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }))
+  const blobUrl = () => URL.createObjectURL(new Blob([page], { type: 'text/html;charset=utf-8' }))
   const download = () => {
     const url = blobUrl()
     const a = document.createElement('a')
@@ -1092,7 +1242,7 @@ function HtmlArtifact({ html }) {
   }
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(html)
+      await navigator.clipboard.writeText(page)
       setCopied(true); setTimeout(() => setCopied(false), 1800)
     } catch { download() }
   }
@@ -1119,19 +1269,19 @@ function HtmlArtifact({ html }) {
         <pre style={{
           margin: 0, padding: '12px 14px', maxHeight: 520, overflow: 'auto', fontSize: 12, lineHeight: 1.55,
           background: C.surface, color: C.text, whiteSpace: 'pre', tabSize: 2,
-        }}>{html}</pre>
+        }}>{page}</pre>
       )}
     </div>
   )
 }
 
 // A skill's answer: Markdown, with an HTML page in it shown as a running artifact.
-function SkillAnswer({ text, onCite }) {
+function SkillAnswer({ text, sources, onCite }) {
   const art = useMemo(() => splitArtifact(text), [text])
   if (!art) return <MarkdownText text={text} onCite={onCite} />
   return <>
     {art.before && <MarkdownText text={art.before} onCite={onCite} />}
-    <HtmlArtifact html={art.html} />
+    <HtmlArtifact html={art.html} sources={sources} />
     {art.after && <MarkdownText text={art.after} onCite={onCite} />}
   </>
 }
@@ -1168,7 +1318,7 @@ function SkillTurn({ data, inThread = false }) {
       <div style={{ fontSize: 14, color: C.danger }}>{data._error === true ? 'Søket feilet.' : data._error}</div>
     ) : (
       <div style={{ marginBottom: sources.length ? '1rem' : 0 }}>
-        <SkillAnswer text={data.answer} onCite={cite} />
+        <SkillAnswer text={data.answer} sources={sources} onCite={cite} />
       </div>
     )}
     {!isLoading && sources.length > 0 && <>
@@ -1292,13 +1442,15 @@ function useBankName() {
 // one, otherwise the copy the analysis read — a path on the server.
 function useDocHref() {
   const server = useContext(ServerContext).replace(/\/$/, '')
-  return (obj) => {
+  // Stable, so it can sit in a dependency list without re-running the memo on
+  // every render.
+  return useCallback((obj) => {
     if (!obj || typeof obj !== 'object') return ''
     const url = (obj.kilde_url || '').trim()
     if (url) return url
     const link = (obj.doc_link || '').trim()
     return link.startsWith('/') ? server + link : link
-  }
+  }, [server])
 }
 
 function SourceTags({ sources }) {
