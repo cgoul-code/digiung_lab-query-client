@@ -130,7 +130,7 @@ const APP_INFO = {
     { label: 'Les resultatet', text: 'Øverst står syntesen på tvers av dokumentene. Under «Analyse per funn» ser du hva hvert dokument bidro med til det enkelte funnet, med sitater og lenker tilbake til kilden.' },
     { label: 'Ta vare på den', text: '«Last ned rapport (.docx)» gir hele analysen som dokument. Kjøringen lagres også i samtaleloggen til venstre, så du kan hente den fram igjen senere.' },
   ],
-  footnote: 'Et dokument er ikke med i analysen før det er bygget inn i dokumentbanken. Rader merket IKKE BYGGET venter på steg 2 i «Administrer dokumentbank».',
+  footnote: 'Et dokument er ikke med i analysen før det er bygget inn i dokumentbanken. Rader merket «Ikke bygget» venter på steg 2 i «Administrer dokumentbank».',
 }
 
 // Output language for the analysis. The codes match LANGUAGES in the server's
@@ -227,57 +227,35 @@ function examplesFor(indexName) {
 
 // ── Themes ────────────────────────────────────────────────────────────────────
 // Each theme provides the same keys as C. Inspired by chatbot-client-HEI20-v2.
+// One neutral ramp carries every surface. A theme changes the accent and
+// whether the ramp is light or dark, nothing else: a page that reads as
+// lavender or peach is a colour wash, and nobody can work in one for an hour.
+// The world shows in the accent, the figures and the sources.
+const INK_LIGHT = {
+  bg: '#F5F7FA', surface: '#FFFFFF', raised: '#ECEFF4',
+  border: 'rgba(17,24,39,0.08)', borderHi: 'rgba(17,24,39,0.16)',
+  text: '#111827', textMute: '#4B5565', textFaint: '#6B7487',
+  success: '#16A34A', successBg: '#F0FDF4',
+  warn: '#B45309', warnBg: '#FEF6E7',
+  danger: '#DC2626', dangerBg: '#FEF2F2',
+  onAccent: '#FFFFFF',
+}
+const INK_DARK = {
+  bg: '#0B0D14', surface: '#11141C', raised: '#1A1E28',
+  border: 'rgba(238,240,245,0.08)', borderHi: 'rgba(238,240,245,0.16)',
+  text: '#EEF0F5', textMute: '#A3A9B8', textFaint: '#7A8296',
+  success: '#4CC38A', successBg: '#0E2A1E',
+  warn: '#FBBF24', warnBg: '#2A1F08',
+  danger: '#E5484D', dangerBg: '#2A1012',
+  onAccent: '#0B0D14',
+}
+// Every accent clears 4.5:1 against the text that sits on it.
 const THEMES = {
-  slate: {
-    label: 'Lys', swatch: '#FFFFFF',
-    bg: '#F8FAFC', surface: '#FFFFFF', border: '#E2E8F0', borderHi: '#CBD5E1',
-    text: '#0F172A', textMute: '#475569', textFaint: '#94A3B8',
-    accent: '#2563EB', accentBg: '#EFF6FF', accentSoft: '#DBEAFE',
-    success: '#059669', successBg: '#ECFDF5',
-    warn: '#B45309', warnBg: '#FEF3C7',
-    danger: '#DC2626', dangerBg: '#FEF2F2',
-    tintMoments: '#F5F3FF',
-  },
-  dark: {
-    label: 'Mørk', swatch: '#02404A',
-    bg: '#062330', surface: '#02404A', border: 'rgba(255,255,255,0.12)', borderHi: 'rgba(255,255,255,0.24)',
-    text: '#FFFFFF', textMute: '#E1EFE3', textFaint: '#9FB5A6',
-    accent: '#8EC9FF', accentBg: '#02636C', accentSoft: '#02404A',
-    success: '#34D399', successBg: '#064E3B',
-    warn: '#FBBF24', warnBg: '#78350F',
-    danger: '#F87171', dangerBg: '#7F1D1D',
-    tintMoments: '#3B2A55',
-  },
-  sea: {
-    label: 'Sjø', swatch: '#02636C',
-    bg: '#E1EFE3', surface: '#FFFFFF', border: 'rgba(2,64,74,0.16)', borderHi: 'rgba(2,64,74,0.30)',
-    text: '#062330', textMute: '#02404A', textFaint: '#5E7A6A',
-    accent: '#02636C', accentBg: '#CFE3D3', accentSoft: '#E1EFE3',
-    success: '#059669', successBg: '#ECFDF5',
-    warn: '#B45309', warnBg: '#FEF3C7',
-    danger: '#DC2626', dangerBg: '#FEF2F2',
-    tintMoments: '#EDE5F3',
-  },
-  lavender: {
-    label: 'Lavendel', swatch: '#EDE5F3',
-    bg: '#EDE5F3', surface: '#FFFFFF', border: 'rgba(93,64,122,0.16)', borderHi: 'rgba(93,64,122,0.30)',
-    text: '#2E1E3D', textMute: '#5D407A', textFaint: '#7A6E8A',
-    accent: '#6B46B5', accentBg: '#E0D3EE', accentSoft: '#EDE5F3',
-    success: '#059669', successBg: '#ECFDF5',
-    warn: '#B45309', warnBg: '#FEF3C7',
-    danger: '#DC2626', dangerBg: '#FEF2F2',
-    tintMoments: '#F0E6FA',
-  },
-  peach: {
-    label: 'Fersken', swatch: '#FEEEDB',
-    bg: '#FEEEDB', surface: '#FFFFFF', border: 'rgba(122,74,32,0.16)', borderHi: 'rgba(122,74,32,0.30)',
-    text: '#3D2610', textMute: '#7A4A20', textFaint: '#8A7060',
-    accent: '#B8764A', accentBg: '#F7E0C4', accentSoft: '#FEEEDB',
-    success: '#059669', successBg: '#ECFDF5',
-    warn: '#B45309', warnBg: '#FEF3C7',
-    danger: '#DC2626', dangerBg: '#FEF2F2',
-    tintMoments: '#F5F3FF',
-  },
+  slate:    { label: 'Lys',      swatch: '#02636C', ...INK_LIGHT, accent: '#02636C', accentBg: '#ECF3F4', accentSoft: '#D5E6E8' },
+  dark:     { label: 'Mørk',     swatch: '#5FBDC4', ...INK_DARK,  accent: '#5FBDC4', accentBg: '#0E2B2F', accentSoft: '#13383D' },
+  sea:      { label: 'Kobolt',   swatch: '#1D4ED8', ...INK_LIGHT, accent: '#1D4ED8', accentBg: '#EEF2FF', accentSoft: '#DBE4FE' },
+  lavender: { label: 'Indigo',   swatch: '#5B4B9A', ...INK_LIGHT, accent: '#5B4B9A', accentBg: '#F1EFF8', accentSoft: '#E0DBF0' },
+  peach:    { label: 'Tegl',     swatch: '#A2552A', ...INK_LIGHT, accent: '#A2552A', accentBg: '#FBF0E9', accentSoft: '#F4DCCB' },
 }
 const THEME_LIST = Object.entries(THEMES).map(([key, t]) => ({ key, ...t }))
 const DEFAULT_THEME = 'slate'
@@ -332,19 +310,16 @@ const card = {
   background: C.surface,
   borderRadius: 12,
   border: `1px solid ${C.border}`,
-  boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+  boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
 }
+// A section label is a word, not shouting. Hierarchy comes from size and
+// colour, so there is no uppercase and no tracking.
 const metaLabel = {
-  fontSize: 11, fontWeight: 600, color: C.textFaint,
-  textTransform: 'uppercase', letterSpacing: '.08em',
+  fontSize: 12, fontWeight: 500, color: C.textMute, letterSpacing: 0,
 }
-const QUERY_TYPE_TINT = {
-  problems: C.dangerBg,
-  moments:  C.tintMoments,
-  personas: C.successBg,
-  free:     C.warnBg,
-  strategisk_risiko: C.accentSoft,
-}
+// Figures line up in a column and never jump as they tick.
+const MONO = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace'
+const figure = { fontFamily: MONO, fontVariantNumeric: 'tabular-nums' }
 
 function applyTheme(name) {
   const t = THEMES[name] || THEMES[DEFAULT_THEME]
@@ -353,27 +328,43 @@ function applyTheme(name) {
     background: C.surface,
     border: `1px solid ${C.border}`,
   })
-  Object.assign(metaLabel, { color: C.textFaint })
-  Object.assign(QUERY_TYPE_TINT, {
-    problems: C.dangerBg,
-    moments:  C.tintMoments,
-    personas: C.successBg,
-    free:     C.warnBg,
-    strategisk_risiko: C.accentSoft,
-  })
+  Object.assign(metaLabel, { color: C.textMute })
   if (typeof document !== 'undefined') {
     document.body.style.background = C.bg
     document.body.style.color = C.text
   }
 }
 
+// Coverage is the whole claim the tool makes, so it is set as a figure rather
+// than as a line of grey meta text under the question.
+function Figure({ value, label, accent = false }) {
+  return (
+    <div>
+      <div style={{ ...figure, fontSize: 28, lineHeight: 1.1, fontWeight: 500, color: accent ? C.accent : C.text }}>{value}</div>
+      <div style={{ fontSize: 12, color: C.textMute, marginTop: 2 }}>{label}</div>
+    </div>
+  )
+}
+
+// The page locator is the one detail only a document-analysis tool has: it says
+// where in which report a finding came from. Mono, so locators line up down a
+// list of sources, and used nowhere else.
+function Locator({ children }) {
+  return (
+    <span style={{
+      ...figure, fontSize: 11, padding: '1px 6px', borderRadius: 4,
+      background: C.raised, color: C.textMute, whiteSpace: 'nowrap',
+    }}>{children}</span>
+  )
+}
+
 function Tag({ tone = 'neutral', children }) {
   const palette = {
-    neutral: { bg: '#F1F5F9', color: C.textMute },
+    neutral: { bg: C.raised, color: C.textMute },
     accent:  { bg: C.accentBg,  color: C.accent },
     success: { bg: C.successBg, color: C.success },
     warn:    { bg: C.warnBg,    color: C.warn },
-  }[tone] || { bg: '#F1F5F9', color: C.textMute }
+  }[tone] || { bg: C.raised, color: C.textMute }
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', padding: '2px 8px',
@@ -383,12 +374,51 @@ function Tag({ tone = 'neutral', children }) {
   )
 }
 
+// ── Icons ────────────────────────────────────────────────────────────────────
+// One set, one size, one stroke, and the colour of the text beside them. The
+// paths are lucide, inlined so nothing extra has to load. Everything that used
+// to be an emoji or a stray glyph comes from here.
+function Glyph({ children, size = 16 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+      style={{ flexShrink: 0, display: 'block' }}>{children}</svg>
+  )
+}
+function SettingsIcon(p) {
+  return <Glyph {...p}><path d="M20 7h-9" /><path d="M14 17H5" /><circle cx="17" cy="17" r="3" /><circle cx="7" cy="7" r="3" /></Glyph>
+}
+function TrashIcon(p) {
+  return <Glyph {...p}><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></Glyph>
+}
+function UserIcon(p) {
+  return <Glyph {...p}><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></Glyph>
+}
+function ThreadIcon(p) {
+  return <Glyph {...p}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></Glyph>
+}
+function DownloadIcon(p) {
+  return <Glyph {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /><path d="M12 15V3" /></Glyph>
+}
+function ExternalIcon(p) {
+  return <Glyph {...p}><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></Glyph>
+}
+function PlusIcon(p) {
+  return <Glyph {...p}><path d="M5 12h14" /><path d="M12 5v14" /></Glyph>
+}
+function ChevronLeftIcon(p) {
+  return <Glyph {...p}><path d="m15 18-6-6 6-6" /></Glyph>
+}
+function ChevronRightIcon(p) {
+  return <Glyph {...p}><path d="m9 18 6-6-6-6" /></Glyph>
+}
+// The disclosure caret is the same chevron, turned down when the section opens.
 function Chevron({ open }) {
   return (
     <span style={{
-      fontSize: 10, color: C.textFaint, display: 'inline-block',
-      transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .2s',
-    }}>▶</span>
+      color: C.textFaint, display: 'inline-flex',
+      transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .18s ease-out',
+    }}><ChevronRightIcon size={14} /></span>
   )
 }
 
@@ -485,10 +515,7 @@ function SectionToggle({ open, onToggle, label, badge }) {
       <Chevron open={open} />
       <span style={{ fontSize: 13, color: C.textMute, fontWeight: 500 }}>{label}</span>
       {badge != null && badge > 0 && (
-        <span style={{
-          background: C.accent, color: '#fff', borderRadius: 99,
-          padding: '1px 7px', fontSize: 11, fontWeight: 600,
-        }}>{badge}</span>
+        <span style={{ ...figure, fontSize: 12, color: C.accent }}>{badge}</span>
       )}
     </div>
   )
@@ -653,7 +680,7 @@ function FilterPanel({ draft, onChangeDraft, onApply, onClear, options, entries 
       <div style={{ display: 'flex', gap: 8, borderTop: `1px solid ${C.border}`, paddingTop: 12 }}>
         <button onClick={onApply} style={{
           fontSize: 13, padding: '7px 16px', borderRadius: 8,
-          border: 'none', background: C.accent, color: '#fff', cursor: 'pointer', fontWeight: 500,
+          border: 'none', background: C.accent, color: C.onAccent, cursor: 'pointer', fontWeight: 500,
         }}>Bruk filtre</button>
         <button onClick={onClear} style={{
           fontSize: 13, padding: '7px 14px', borderRadius: 8,
@@ -718,12 +745,13 @@ function SourceItem({ src, id }) {
         {src.n != null && <span style={{ fontSize: 12, fontWeight: 700, color: C.accent }}>[{src.n}]</span>}
         {url
           ? <a href={url} target="_blank" rel="noopener noreferrer"
-               style={{ color: C.accent, textDecoration: 'underline', fontWeight: 600, fontSize: 13, wordBreak: 'break-word' }}>
-              {reportName} ↗
+               style={{ color: C.accent, textDecoration: 'underline', fontWeight: 500, fontSize: 13, wordBreak: 'break-word',
+                        display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              {reportName}<ExternalIcon size={13} />
             </a>
           : <span style={{ color: C.text, fontWeight: 600, fontSize: 13, wordBreak: 'break-word' }}>{reportName}</span>}
         {pageLocator(src.filename, src.page_number, { short: true }) &&
-          <Tag tone="neutral">{pageLocator(src.filename, src.page_number, { short: true })}</Tag>}
+          <Locator>{pageLocator(src.filename, src.page_number, { short: true })}</Locator>}
         {typeof src.score === 'number' && <Tag tone="success">score {src.score.toFixed(2)}</Tag>}
         {src.segment && <Tag tone="neutral">{src.segment}</Tag>}
         {src.publisert_av && <Tag tone="neutral">{src.publisert_av}</Tag>}
@@ -1008,7 +1036,8 @@ function MdExportButtons({ makeText, filename, what = 'svaret' }) {
     <button onClick={copy} style={smallBtn} title={`Kopier ${what} som Markdown — lim inn i Teams`}>
       {copied ? 'Kopiert ✓' : 'Kopier'}
     </button>
-    <button onClick={download} style={smallBtn} title={`Last ned ${what} som Markdown-fil`}>↓ .md</button>
+    <button onClick={download} style={{ ...smallBtn, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+      title={`Last ned ${what} som Markdown-fil`}><DownloadIcon size={14} />.md</button>
   </>
 }
 
@@ -1260,7 +1289,8 @@ function HtmlArtifact({ html, sources }) {
         {tabBtn('view', 'Forhåndsvisning')}
         {tabBtn('code', 'Kode')}
         <button onClick={copy} style={smallBtn} title="Kopier HTML-koden">{copied ? 'Kopiert ✓' : 'Kopier kode'}</button>
-        <button onClick={download} style={smallBtn} title="Last ned siden som HTML-fil — åpnes i nettleseren">↓ .html</button>
+        <button onClick={download} style={{ ...smallBtn, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          title="Last ned siden som HTML-fil — åpnes i nettleseren"><DownloadIcon size={14} />.html</button>
       </div>
       {tab === 'view' ? (
         <iframe ref={frameRef} title={title} sandbox="allow-scripts" srcDoc={srcDoc}
@@ -1380,7 +1410,8 @@ function SkillSessionCard({ data, onDismiss, onNewSession, active }) {
             {canExport && <MdExportButtons what="samtalen"
               makeText={() => skillSessionToMarkdown(data, { bankName, docHref })}
               filename={() => `${data.skill || 'skill'}-samtale-${mdSlug(turns[0]?.question)}.md`} />}
-            {onNewSession && <button onClick={onNewSession} style={smallBtn} title="Avslutt denne samtalen og start en ny — denne ligger fortsatt i samtaleloggen">＋ Ny samtale</button>}
+            {onNewSession && <button onClick={onNewSession} title="Avslutt denne samtalen og start en ny — denne ligger fortsatt i samtaleloggen"
+              style={{ ...smallBtn, display: 'inline-flex', alignItems: 'center', gap: 5 }}><PlusIcon size={14} />Ny samtale</button>}
             <DismissResult onDismiss={onDismiss} />
           </div>
         )}
@@ -1464,7 +1495,7 @@ function SourceTags({ sources }) {
         const pages  = isObj ? (s.pages || []) : []
         const url    = docHref(s)
         const label  = tittel + (pages.length ? ` (s. ${pages.join(', ')})` : '')
-        const tag    = <Tag tone="neutral">{label}{url ? ' ↗' : ''}</Tag>
+        const tag    = <Tag tone="neutral">{label}{url ? <ExternalIcon size={12} /> : null}</Tag>
         return url
           ? <a key={i} href={url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>{tag}</a>
           : <span key={i}>{tag}</span>
@@ -1613,8 +1644,8 @@ function FindingSource({ source, entry, spec }) {
           <SectionToggle open={open} onToggle={() => setOpen(p => !p)} label={`Sitater (${chunks.length})`} />
           {open && chunks.map((c, i) => (
             <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-              {pageLocator(entry.filename, c.page) && <span style={{ fontWeight: 600 }}>[{pageLocator(entry.filename, c.page)}] </span>}«{c.excerpt}»
-              {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
+              {pageLocator(entry.filename, c.page) && <><Locator>{pageLocator(entry.filename, c.page)}</Locator>{' '}</>}«{c.excerpt}»
+              {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>til sitatet</a></>}
             </div>
           ))}
         </div>
@@ -1643,7 +1674,7 @@ function FindingsBreakdown({ items, perDoc, spec }) {
     }
   }
   const leftovers = perDoc.filter(e => !cited.has(normTitle(e.tittel || e.filename)))
-  const heading = { fontSize: 13, fontWeight: 700, color: C.text, margin: '4px 0 2px', textTransform: 'uppercase', letterSpacing: '.04em' }
+  const heading = { fontSize: 14, fontWeight: 500, color: C.text, margin: '4px 0 2px' }
 
   return (
     <>
@@ -1811,8 +1842,8 @@ function StructuredDocAnalysis({ entry, spec }) {
           <SectionToggle open={showChunks} onToggle={() => setShowChunks(p => !p)} label={`Kildehenvisninger (${chunks.length})`} />
           {showChunks && chunks.map((c, i) => (
             <div key={i} style={{ fontSize: 12, color: C.textMute, marginTop: 6, paddingLeft: 12, borderLeft: `2px solid ${C.border}`, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-              {pageLocator(entry.filename, c.page) && <span style={{ fontWeight: 600 }}>[{pageLocator(entry.filename, c.page)}] </span>}{c.excerpt}
-              {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>↗ til sitatet</a></>}
+              {pageLocator(entry.filename, c.page) && <><Locator>{pageLocator(entry.filename, c.page)}</Locator>{' '}</>}{c.excerpt}
+              {c.deep_link && <> <a href={c.deep_link} target="_blank" rel="noopener noreferrer" style={{ color: C.accent, whiteSpace: 'nowrap' }}>til sitatet</a></>}
             </div>
           ))}
         </div>
@@ -1908,7 +1939,11 @@ function ProgressBar({ index, total, tittel, nodeMessage }) {
     <div style={{ marginBottom: 16 }}>
       <div style={{ fontSize: 13, color: C.textMute, marginBottom: 8 }}>{nodeMessage || 'Kjører…'}</div>
       <div style={{ height: 6, background: C.border, borderRadius: 99, overflow: 'hidden', marginBottom: 8 }}>
-        <div style={{ height: '100%', width: `${pct}%`, background: `linear-gradient(90deg, ${C.accent}, #60A5FA)`, borderRadius: 99, transition: 'width .3s' }} />
+        <div style={{
+          height: '100%', background: C.accent, borderRadius: 99,
+          transform: `scaleX(${pct / 100})`, transformOrigin: 'left',
+          transition: 'transform .3s ease-out',
+        }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: C.textFaint }}>
         <span style={{ maxWidth: 560, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{tittel || ''}</span>
@@ -1928,7 +1963,7 @@ function AggregateResultCard({ data, onDismiss }) {
   // flat finding list. The spec is what tells the two apart.
   const spec = specFor(data.query_type)
   const perDoc = data.per_doc_findings || []
-  const sectionHeading = { fontSize: 13, fontWeight: 700, color: C.text, margin: '4px 0 2px', textTransform: 'uppercase', letterSpacing: '.04em' }
+  const sectionHeading = { fontSize: 14, fontWeight: 500, color: C.text, margin: '4px 0 2px' }
   return (
     <div style={{ ...card, padding: '1.25rem 1.5rem', marginBottom: '0.875rem' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
@@ -1944,16 +1979,12 @@ function AggregateResultCard({ data, onDismiss }) {
           tittel={data._docTittel} nodeMessage={data._nodeMessage} />
       )}
       {!isLoading && (
-        <div style={{ fontSize: 12, color: C.textFaint, marginBottom: 14, display: 'flex', gap: 16 }}>
-          <span>{data.documents_visited} dokumenter besøkt</span>
-          <span>{data.documents_with_findings} med funn</span>
-          {spec
-            ? (data.aggregated
-                ? <span>{items.length} {spec.itemsLabel}</span>
-                : <span>analyse per dokument</span>)
-            : (data.aggregated === false
-                ? <span>analyse per dokument</span>
-                : <span>{items.length} {qt.label.toLowerCase()}</span>)}
+        <div style={{ display: 'flex', gap: 32, marginBottom: 20, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <Figure value={data.documents_visited} label="dokumenter besøkt" accent />
+          <Figure value={data.documents_with_findings} label="med funn" />
+          {data.aggregated === false
+            ? <div style={{ fontSize: 12, color: C.textMute, paddingBottom: 2 }}>analyse per dokument</div>
+            : <Figure value={items.length} label={spec ? spec.itemsLabel : qt.label.toLowerCase()} />}
         </div>
       )}
 
@@ -2010,8 +2041,8 @@ function AggregateResultCard({ data, onDismiss }) {
       {!isLoading && data._job_id && (
         <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.border}`, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           {[
-            { fmt: '', label: '↓ Last ned rapport (.docx)' },
-            { fmt: 'pdf', label: '↓ Last ned PDF' },
+            { fmt: '', label: 'Last ned rapport (.docx)' },
+            { fmt: 'pdf', label: 'Last ned PDF' },
           ].map(({ fmt, label }) => (
             <a key={fmt || 'docx'}
               href={`${webserverEndPoint.replace(/\/$/, '')}/aggregate/report/${data._job_id}${fmt ? `?format=${fmt}` : ''}`}
@@ -2369,9 +2400,9 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
         <div style={{ padding: '10px 14px' }}>
           <div style={{ display: 'grid', gridTemplateColumns: LIST_COLUMNS, gap: 12, alignItems: 'center' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
-                {deleting && <span aria-hidden="true" title="Slettes…" style={{ fontSize: 14, flexShrink: 0 }}>🗑</span>}
+                {deleting && <span title="Slettes…" style={{ color: C.textFaint, flexShrink: 0 }}><TrashIcon size={14} /></span>}
                 {unbuilt && !deleting && (
-                  <span title="Ikke bygget inn i dokumentbanken ennå"><Tag tone="warn">IKKE BYGGET</Tag></span>
+                  <span title="Ikke bygget inn i dokumentbanken ennå"><Tag tone="warn">Ikke bygget</Tag></span>
                 )}
                 <span style={{
                   fontSize: 13, fontWeight: 500, color: C.text,
@@ -2423,7 +2454,8 @@ function AdminEntryRow({ entry, server, indexName, onSaved, onDeleted, onChanged
                   </>
                 )}
                 {!deleting && <button onClick={startEdit} disabled={busy} style={btn.ghost}>Rediger</button>}
-                {!deleting && <button onClick={remove} disabled={busy} style={btn.danger} title="Slett fra listen">🗑 Slett</button>}
+                {!deleting && <button onClick={remove} disabled={busy} title="Slett fra listen"
+            style={{ ...btn.danger, display: 'inline-flex', alignItems: 'center', gap: 6 }}><TrashIcon size={14} />Slett</button>}
               </div>
             </div>
 
@@ -2985,9 +3017,9 @@ function ReindexPanel({ server, indexName, onDone, onBusyChange, onRepaired, toI
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, tableLayout: 'fixed' }}>
                     <thead>
                       <tr style={{ background: C.bg }}>
-                        <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', borderBottom: `1px solid ${C.border}`, width: 110, position: 'sticky', top: 0, background: C.bg, zIndex: 1 }}>Status</th>
-                        <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.bg, zIndex: 1 }}>Tittel / Kilde</th>
-                        <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase', borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.bg, zIndex: 1 }}>Detalj</th>
+                        <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 12, color: C.textMute, fontWeight: 500, borderBottom: `1px solid ${C.border}`, width: 110, position: 'sticky', top: 0, background: C.bg, zIndex: 1 }}>Status</th>
+                        <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 12, color: C.textMute, fontWeight: 500, borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.bg, zIndex: 1 }}>Tittel / Kilde</th>
+                        <th style={{ textAlign: 'left', padding: '6px 10px', fontSize: 12, color: C.textMute, fontWeight: 500, borderBottom: `1px solid ${C.border}`, position: 'sticky', top: 0, background: C.bg, zIndex: 1 }}>Detalj</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3215,7 +3247,11 @@ function BulkAddPanel({ server, indexName, entries, files, scanned, unsupported,
           Legger til {Math.min(progress.done + 1, progress.total)} av {progress.total}
         </div>
         <div style={{ height: 6, borderRadius: 99, background: C.surface, overflow: 'hidden', marginBottom: 8 }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: C.accent, transition: 'width .2s' }} />
+          <div style={{
+            height: '100%', background: C.accent,
+            transform: `scaleX(${pct / 100})`, transformOrigin: 'left',
+            transition: 'transform .2s ease-out',
+          }} />
         </div>
         <div style={{ fontSize: 12, color: C.textMute, marginBottom: 10, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {progress.current}
@@ -3500,7 +3536,7 @@ function ExampleQuestions({ server, indexName, onChanged }) {
             disabled={busy}
             title="Fjern spørsmålet"
             aria-label={`Fjern spørsmål ${i + 1}`}
-            style={{ ...btn.danger }}>🗑</button>
+            style={{ ...btn.danger, display: 'inline-flex', alignItems: 'center' }}><TrashIcon /></button>
         </div>
       ))}
 
@@ -3611,7 +3647,11 @@ function AddExistingReports({ server, indexName, entries, onAdded, onClose }) {
           Legger til {Math.min(progress.done + 1, progress.total)} av {progress.total}
         </div>
         <div style={{ height: 6, borderRadius: 99, background: C.bg, overflow: 'hidden' }}>
-          <div style={{ width: `${pct}%`, height: '100%', background: C.accent, transition: 'width .2s' }} />
+          <div style={{
+            height: '100%', background: C.accent,
+            transform: `scaleX(${pct / 100})`, transformOrigin: 'left',
+            transition: 'transform .2s ease-out',
+          }} />
         </div>
       </div>
     )
@@ -4439,7 +4479,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
 
             <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
               <div style={{ padding: '10px 14px', background: C.bg, borderBottom: `1px solid ${C.border}`,
-                display: 'grid', gridTemplateColumns: LIST_COLUMNS, gap: 12, fontSize: 11, color: C.textFaint, fontWeight: 600, letterSpacing: '.06em', textTransform: 'uppercase' }}>
+                display: 'grid', gridTemplateColumns: LIST_COLUMNS, gap: 12, fontSize: 12, color: C.textMute, fontWeight: 500 }}>
                 {LIST_FILTERS.map(f => {
                   const on = !!listFilter[f.key]
                   const set = e => setListFilter(prev => ({ ...prev, [f.key]: e.target.value }))
@@ -4606,7 +4646,7 @@ function AdminView({ server, indexName, indexes, onSelectIndex, onBackToSearch, 
 const btn = {
   primary: {
     padding: '8px 16px', borderRadius: 8, border: 'none',
-    background: C.accent, color: '#fff', cursor: 'pointer',
+    background: C.accent, color: C.onAccent, cursor: 'pointer',
     fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
   },
   ghost: {
@@ -4640,7 +4680,7 @@ function EmptyState({ indexName, onPick }) {
         Klar til å analysere på tvers av dokumentene
       </div>
       <div style={{ fontSize: 13, color: C.textMute, marginBottom: 18 }}>
-        Skriv et spørsmål over — eller prøv et av disse:
+        Skriv et spørsmål over, eller prøv et av disse
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 560, margin: '0 auto' }}>
         {examples.map((q, i) => (
@@ -6167,7 +6207,7 @@ function AnalysisAdmin({ server, indexes, currentIndex, onBackToSearch, onChange
                     ? 'La AI skrive et utkast ut fra beskrivelsen'
                     : 'Skriv en beskrivelse først — den er grunnlaget for forslaget'}
                   style={{ ...btn.ghost, ...(suggesting || !form.description.trim() ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}>
-                  {suggesting ? <>Foreslår<LoadingDots /></> : '✨ Foreslå instruksjoner'}
+                  {suggesting ? <>Foreslår<LoadingDots /></> : 'Foreslå instruksjoner'}
                 </button>
                 <span style={{ fontSize: 11.5, color: C.textFaint }}>
                   Utkast basert på beskrivelsen. Les gjennom og juster før du oppretter.
@@ -6487,7 +6527,7 @@ function ConversationSidebar({ open, onToggle, history, activeId, onSelect, onDe
         <button onClick={onToggle} title="Vis samtalelogg" style={{
           border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
           borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1,
-        }}>»</button>
+        }}><ChevronRightIcon /></button>
         <div style={{
           writingMode: 'vertical-rl', marginTop: 12, fontSize: 11, letterSpacing: '.08em',
           textTransform: 'uppercase', color: C.textFaint, userSelect: 'none',
@@ -6506,13 +6546,15 @@ function ConversationSidebar({ open, onToggle, history, activeId, onSelect, onDe
           <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>Samtalelogg</div>
           <div style={{ fontSize: 11, color: C.textFaint, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 210 }}
             title={user ? `Logget inn som ${user} — loggen følger deg på tvers av enheter` : 'Ikke innlogget — loggen lagres kun i denne nettleseren'}>
-            {user ? `👤 ${user}` : 'Kun denne nettleseren'}
+            {user
+                ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><UserIcon size={14} />{user}</span>
+                : 'Kun denne nettleseren'}
           </div>
         </div>
         <button onClick={onToggle} title="Skjul panel" style={{
           border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
           borderRadius: 8, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1,
-        }}>«</button>
+        }}><ChevronLeftIcon /></button>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
@@ -6543,7 +6585,8 @@ function ConversationSidebar({ open, onToggle, history, activeId, onSelect, onDe
                   maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                 }}>{entry.index || '—'}</span>
                 {entry.result?._type === 'skill_session' && (
-                  <span title="Samtale med oppfølgingsspørsmål">💬 {entry.turns || entry.result.turns?.length || 1}</span>
+                  <span title="Samtale med oppfølgingsspørsmål" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                        <ThreadIcon size={13} />{entry.turns || entry.result.turns?.length || 1}</span>
                 )}
                 <span>{relTime(entry.ts)}</span>
               </div>
@@ -7340,14 +7383,14 @@ export default function App() {
     : activeSkill
     ? (bankSkills.find(s => s.key === activeSkill)?.description || 'Skriv et spørsmål…') + ' (skriv spørsmålet ditt)'
     : (QUERY_TYPES.find(q => q.key === queryType)?.description || 'Skriv et spørsmål…')
-      + ' (valgfritt — la stå tomt for å bruke analysetypens egen instruks)'
+      + ''
 
   return (
     <BankLabelsContext.Provider value={bankLabels}>
     <div style={{
       minHeight: '100vh',
       background: C.bg,
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+      fontFamily: '"IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       color: C.text,
     }}>
       {/* Top bar */}
@@ -7356,7 +7399,7 @@ export default function App() {
         background: 'rgba(248,250,252,0.85)', backdropFilter: 'blur(8px)',
         borderBottom: `1px solid ${C.border}`,
       }}>
-        <div style={{ maxWidth: 1080, margin: '0 auto', padding: '14px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <div style={{ maxWidth: 1440, margin: '0 auto', padding: '12px 32px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             {/* A page with a folded corner, checked: documents, and the
                 analysis run across them. Two strokes, so it stays legible at 32px. */}
@@ -7382,7 +7425,7 @@ export default function App() {
                   footnote={APP_INFO.footnote}
                 />
               </div>
-              <div style={{ fontSize: 12, color: C.textFaint, lineHeight: 1.2 }}>Analyser dokumenter med AI</div>
+              <div style={{ fontSize: 13, color: C.textMute, lineHeight: 1.2 }}>Hele samlingen, dokument for dokument</div>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -7415,7 +7458,7 @@ export default function App() {
                 background: settingsOpen ? C.accentBg : C.surface, cursor: 'pointer', fontSize: 15,
                 color: settingsOpen ? C.accent : C.textMute, lineHeight: 1,
               }}
-            >⚙</button>
+            ><SettingsIcon /></button>
           </div>
         </div>
       </header>
@@ -7502,7 +7545,7 @@ export default function App() {
           />
         </AdminDrawer>
         <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ maxWidth: 1080, margin: '0 auto', padding: '1.75rem 1.5rem 3rem' }}>
+      <div style={{ maxWidth: 1440, margin: '0 auto', padding: '32px 32px 64px' }}>
 
         {/* Index-load readiness banner — querying is blocked until ready */}
         {health.state !== 'ready' && (
@@ -7550,7 +7593,7 @@ export default function App() {
                 : <>Henter analysemaler<LoadingDots /></>}
             </div>
           ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
             {availableQueryTypes.map(qt => {
               const active = !activeSkill && queryType === qt.key
               // A template made here can be edited; a built-in is read-only, and
@@ -7563,19 +7606,20 @@ export default function App() {
                 <div key={qt.key} style={{ position: 'relative', display: 'flex' }}>
                   <button onClick={() => { setQueryType(qt.key); setActiveSkill('') }} style={{
                     flex: 1, minWidth: 0,
-                    padding: '12px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                    border: active ? `1.5px solid ${C.accent}` : `1px solid ${C.border}`,
-                    background: active ? C.accentBg : C.surface,
-                    fontFamily: 'inherit',
-                  }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text, marginBottom: 3, paddingRight: editable ? 48 : 16 }}>{qt.label}</div>
-                    <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.4 }}>{qt.description}</div>
-                  </button>
-                  <div style={{
-                    position: 'absolute', top: 12, right: 12,
-                    width: 8, height: 8, borderRadius: 99,
-                    background: QUERY_TYPE_TINT[qt.key] || C.accentBg,
+                    padding: '16px', borderRadius: 12, cursor: 'pointer', textAlign: 'left',
                     border: `1px solid ${C.border}`,
+                    boxShadow: active ? `inset 0 0 0 1px ${C.accent}` : 'none',
+                    background: active ? C.accentBg : C.surface,
+                    fontFamily: 'inherit', transition: 'background-color .15s ease-out, box-shadow .15s ease-out',
+                  }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 4, paddingRight: editable ? 48 : 20 }}>{qt.label}</div>
+                    <div style={{ fontSize: 13, color: C.textMute, lineHeight: 1.45 }}>{qt.description}</div>
+                  </button>
+                  <div aria-hidden="true" style={{
+                    position: 'absolute', top: 16, right: 16,
+                    width: 8, height: 8, borderRadius: 99,
+                    background: active ? C.accent : 'transparent',
+                    border: `1px solid ${active ? C.accent : C.borderHi}`,
                   }} />
                   {editable && (
                     <button
@@ -7583,7 +7627,7 @@ export default function App() {
                       title={`Rediger «${qt.label}»`}
                       aria-label={`Rediger analysemalen ${qt.label}`}
                       style={{
-                        position: 'absolute', top: 6, right: 26,
+                        position: 'absolute', top: 12, right: 32,
                         border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
                         borderRadius: 6, width: 22, height: 22, lineHeight: 0,
                         cursor: 'pointer', padding: 0,
@@ -7598,26 +7642,28 @@ export default function App() {
           {bankSkills.length > 0 && (
             <>
               <div style={{ ...metaLabel, margin: '16px 0 8px' }}>Skills — raskt svar fra ett søk i hele banken</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
                 {bankSkills.map(s => {
                   const active = activeSkill === s.key
                   return (
                     <div key={s.key} style={{ position: 'relative', display: 'flex' }}>
                       <button onClick={() => setActiveSkill(s.key)} style={{
                         flex: 1, minWidth: 0,
-                        padding: '12px 14px', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
-                        border: active ? `1.5px solid ${C.accent}` : `1px dashed ${C.borderHi}`,
+                        padding: '16px', borderRadius: 12, cursor: 'pointer', textAlign: 'left',
+                        border: `1px dashed ${C.borderHi}`,
+                        boxShadow: active ? `inset 0 0 0 1px ${C.accent}` : 'none',
                         background: active ? C.accentBg : C.surface, fontFamily: 'inherit',
+                        transition: 'background-color .15s ease-out, box-shadow .15s ease-out',
                       }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: active ? C.accent : C.text, marginBottom: 3, paddingRight: 30 }}>⚡ {s.label}</div>
-                        <div style={{ fontSize: 12, color: C.textMute, lineHeight: 1.4 }}>{s.description}</div>
+                        <div style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 4, paddingRight: 30 }}>{s.label}</div>
+                        <div style={{ fontSize: 13, color: C.textMute, lineHeight: 1.45 }}>{s.description}</div>
                       </button>
                       <button
                         onClick={() => openSkillEditor(s.key)}
                         title={`Rediger «${s.label}»`}
                         aria-label={`Rediger skillen ${s.label}`}
                         style={{
-                          position: 'absolute', top: 6, right: 8,
+                          position: 'absolute', top: 12, right: 12,
                           border: `1px solid ${C.border}`, background: C.bg, color: C.textMute,
                           borderRadius: 6, width: 22, height: 22, lineHeight: 0,
                           cursor: 'pointer', padding: 0,
@@ -7679,10 +7725,6 @@ export default function App() {
           </div>
           <div style={{ display: 'flex', gap: 10 }}>
             <div style={{ flex: 1, position: 'relative', display: 'flex', ...lockedWhile(loading) }}>
-              <span aria-hidden="true" style={{
-                position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)',
-                fontSize: 14, color: C.textFaint, pointerEvents: 'none', lineHeight: 1,
-              }}>✎</span>
               <input
                 id="analysis-question"
                 value={question}
@@ -7690,11 +7732,10 @@ export default function App() {
                 onKeyDown={e => e.key === 'Enter' && !loading && runQuery()}
                 placeholder={placeholder}
                 style={{
-                  flex: 1, padding: '12px 14px 12px 36px', borderRadius: 10,
-                  border: `1.5px solid ${C.borderHi}`, background: C.surface,
-                  fontSize: 16, outline: 'none', fontFamily: 'inherit', color: C.text,
-                  boxShadow: 'inset 0 1px 2px rgba(15,23,42,0.04)',
-                  transition: 'border-color .12s, box-shadow .12s',
+                  flex: 1, padding: '12px 16px', borderRadius: 10,
+                  border: `1px solid ${C.borderHi}`, background: C.surface,
+                  fontSize: 15, outline: 'none', fontFamily: 'inherit', color: C.text,
+                  transition: 'border-color .15s ease-out, box-shadow .15s ease-out',
                 }}
                 onFocus={e => {
                   e.target.style.borderColor = C.accent
@@ -7702,15 +7743,15 @@ export default function App() {
                 }}
                 onBlur={e => {
                   e.target.style.borderColor = C.borderHi
-                  e.target.style.boxShadow = 'inset 0 1px 2px rgba(15,23,42,0.04)'
+                  e.target.style.boxShadow = 'none'
                 }}
               />
             </div>
             <button onClick={() => runQuery()} disabled={loading || health.state !== 'ready'} style={{
               padding: '12px 24px', borderRadius: 10, border: 'none',
-              background: loading || health.state !== 'ready' ? '#93C5FD' : C.accent,
-              color: '#fff', cursor: loading || health.state !== 'ready' ? 'not-allowed' : 'pointer',
-              fontSize: 15, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
+              background: loading || health.state !== 'ready' ? C.borderHi : C.accent,
+              color: C.onAccent, cursor: loading || health.state !== 'ready' ? 'not-allowed' : 'pointer',
+              fontSize: 15, fontWeight: 500, whiteSpace: 'nowrap', fontFamily: 'inherit',
               minWidth: 110,
             }}>
               {loading ? <LoadingDots /> : openSkillSession ? 'Spør videre' : activeSkill ? 'Spør' : 'Analyser'}
@@ -7721,7 +7762,7 @@ export default function App() {
                 border: `1px solid ${C.borderHi}`, background: C.surface, color: C.text,
                 cursor: 'pointer', fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', fontFamily: 'inherit',
               }}>
-                ＋ Ny samtale
+                <PlusIcon size={14} /> Ny samtale
               </button>
             )}
             {loading && (
